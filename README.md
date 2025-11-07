@@ -18,38 +18,31 @@ This application provides a comprehensive way to explore your Google Maps locati
 
 ## Installation
 
-### Prerequisites
+### Quick Start
 
-- Node.js (v14 or higher)
-- npm or yarn
-- Expo CLI (`npm install -g expo-cli`)
-- iOS Simulator or physical iOS device
-- Xcode (for iOS development)
-
-### Setup
-
-1. Clone or download this repository
-
-2. Install dependencies:
+1. **Install dependencies:**
    ```bash
    npm install
    ```
 
-3. Install required Expo packages:
-   ```bash
-   npx expo install react-native-maps
-   npx expo install expo-document-picker
-   npx expo install expo-file-system
-   ```
-
-4. Start the Expo development server:
+2. **Start the app:**
    ```bash
    npx expo start
    ```
 
-5. Run on iOS:
-   - Press `i` in the terminal to open in iOS Simulator, or
-   - Scan the QR code with the Expo Go app on your physical device
+3. **Run on iOS:**
+   - Press `i` for iOS Simulator, or
+   - Scan the QR code with Expo Go on your device
+
+📖 **For detailed installation instructions, see [INSTALL.md](INSTALL.md)**
+
+### Prerequisites
+
+- Node.js (v14 or higher)
+- npm or yarn
+- Expo CLI (optional)
+- iOS Simulator or physical iOS device with Expo Go
+- Xcode (for iOS development on macOS)
 
 ## Usage
 
@@ -127,9 +120,15 @@ Route paths are extracted from objects containing a `timelinePath` key:
 
 ```
 Project/
-├── App.js              # Main application component
-├── location-history.json  # Sample/imported location data (optional)
-└── README.md           # This file
+├── App.js                 # Main application component
+├── app.json              # Expo configuration
+├── babel.config.js       # Babel configuration
+├── package.json          # Dependencies and scripts
+├── .gitignore            # Git ignore rules
+├── location-history.json # Sample/imported location data (optional)
+├── prompt.md             # Project requirements specification
+├── README.md             # Project documentation
+└── INSTALL.md            # Detailed installation guide
 ```
 
 ## Dependencies
