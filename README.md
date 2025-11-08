@@ -1,10 +1,8 @@
-# Google Maps Location History Visualizer
-
-A React Native iOS application built with Expo that allows users to import and visualize their Google Maps location history data on an interactive map with multiple visualization layers.
+# WhereWasI? - An iOS App for Visualizing Personal Location Timeline Data
 
 ## Overview
 
-This application provides a comprehensive way to explore your Google Maps location history by importing your exported JSON data and visualizing it through three distinct map layers: point markers, polylines, and heatmaps. The app features a modern dark mode interface and optimized performance for handling large datasets.
+An interactive iOS mapping app that visualizes your personal location history from Google Maps Timeline. Users manually import their Google Timeline data (as a JSON) and can then choose how it is visualized and filtered. Data will be visualized as points, polylines (points connected by lines), and as a heatmap. Filters include time range and location. 
 
 ## Features
 
@@ -13,8 +11,6 @@ This application provides a comprehensive way to explore your Google Maps locati
 - **🛣️ Route Visualization**: Display timeline paths as polylines showing your movement routes
 - **🔥 Heatmap Layer**: Visualize location density using a heatmap overlay
 - **🎛️ Layer Controls**: Toggle visibility of each visualization layer independently
-- **🌙 Dark Mode**: Custom dark mode map styling for better visual experience
-- **⚡ Performance Optimized**: Optimized rendering for large datasets with memoized markers
 
 ## Installation
 
@@ -34,26 +30,31 @@ This application provides a comprehensive way to explore your Google Maps locati
    - Press `i` for iOS Simulator, or
    - Scan the QR code with Expo Go on your device
 
-📖 **For detailed installation instructions, see [INSTALL.md](INSTALL.md)**
-
 ### Prerequisites
 
 - Node.js (v14 or higher)
-- npm or yarn
+- npm
 - Expo CLI (optional)
 - iOS Simulator or physical iOS device with Expo Go
-- Xcode (for iOS development on macOS)
 
 ## Usage
 
-1. **Launch the App**: Open the app on your iOS device or simulator
+0. **Download your Data**:
+   1. Go to [Google Takeout](https://takeout.google.com/)
+   2. Deselect All
+   3. Select "Timeline" from the list of services
+   4. Choose JSON as the data format
+   5. Download and extract the archive
+   6. Keep your `Location History.json` file somewhere easy to find on your phone
 
-2. **Load Your Data**:
+2. **Launch the App**: Open the app on your iOS device or simulator
+
+3. **Load Your Data**:
    - Tap the "Load Data" button
    - Select your Google Maps location history JSON file from your device
    - The app will automatically parse and load your location data
 
-3. **Explore Your Data**:
+4. **Explore Your Data**:
    - Use the toggle buttons to show/hide different visualization layers:
      - **Toggle Points**: Show/hide visit location markers
      - **Toggle Polylines**: Show/hide route paths
@@ -91,14 +92,6 @@ Route paths are extracted from objects containing a `timelinePath` key:
   ]
 }
 ```
-
-### How to Export Your Google Maps Data
-
-1. Go to [Google Takeout](https://takeout.google.com/)
-2. Select "Location History" from the list of services
-3. Choose your preferred export format (JSON)
-4. Download and extract the archive
-5. Locate the `Location History.json` file
 
 ## Technical Details
 
@@ -144,30 +137,3 @@ Project/
 - Currently designed for iOS only
 - Requires Google Maps location history JSON format
 - Large datasets may take time to parse and render
-
-## Future Enhancements
-
-Potential improvements for future versions:
-- Android support
-- Date range filtering
-- Location clustering for better performance
-- Export functionality for filtered data
-- Statistics and analytics dashboard
-- Custom map styles and themes
-
-## License
-
-This project is provided as-is for educational and personal use.
-
-## Contributing
-
-Contributions, issues, and feature requests are welcome. Please feel free to submit a pull request or open an issue.
-
-## Support
-
-For issues or questions, please open an issue in the repository or contact the project maintainer.
-
----
-
-**Note**: This application processes location data locally on your device. No data is transmitted to external servers.
-
