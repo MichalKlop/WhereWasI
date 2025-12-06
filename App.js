@@ -103,13 +103,89 @@ const atlasMapStyle = [
   },
 ];
 
+// Low-zoom (country-level) basemap that removes clutter but stays on-brand with atlas colors
+const atlasCountryStyle = [
+  { elementType: "geometry", stylers: [{ color: "#0b1220" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#9fb4cc" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#0b1220" }] },
+  {
+    featureType: "administrative",
+    elementType: "geometry.stroke",
+    stylers: [{ color: "#2c3f57" }, { weight: 0.7 }],
+  },
+  {
+    featureType: "administrative.country",
+    elementType: "geometry.stroke",
+    stylers: [{ color: "#3a4f6a" }, { weight: 1.2 }],
+  },
+  {
+    featureType: "administrative.province",
+    elementType: "geometry.stroke",
+    stylers: [{ color: "#305070" }, { weight: 1 }],
+  },
+  { featureType: "administrative.locality", stylers: [{ visibility: "off" }] },
+  { featureType: "administrative.neighborhood", stylers: [{ visibility: "off" }] },
+  { featureType: "poi", stylers: [{ visibility: "off" }] },
+  {
+    featureType: "road",
+    elementType: "geometry",
+    stylers: [{ color: "#162336" }, { saturation: -10 }, { lightness: 5 }],
+  },
+  {
+    featureType: "road",
+    elementType: "geometry.stroke",
+    stylers: [{ color: "#101827" }, { lightness: 10 }],
+  },
+  {
+    featureType: "road",
+    elementType: "labels.text.fill",
+    stylers: [{ color: "#6f85a3" }, { visibility: "simplified" }],
+  },
+  {
+    featureType: "road.highway",
+    elementType: "geometry",
+    stylers: [{ color: "#23344c" }],
+  },
+  {
+    featureType: "road.highway",
+    elementType: "geometry.stroke",
+    stylers: [{ color: "#1a2433" }],
+  },
+  {
+    featureType: "road.highway",
+    elementType: "labels.text.fill",
+    stylers: [{ color: "#9fb4cc" }],
+  },
+  { featureType: "transit", stylers: [{ visibility: "off" }] },
+  {
+    featureType: "landscape.natural",
+    elementType: "geometry",
+    stylers: [{ color: "#0f172a" }],
+  },
+  {
+    featureType: "landscape.man_made",
+    elementType: "geometry",
+    stylers: [{ color: "#0f172a" }],
+  },
+  {
+    featureType: "water",
+    elementType: "geometry",
+    stylers: [{ color: "#0a1b2b" }],
+  },
+  {
+    featureType: "water",
+    elementType: "labels.text.fill",
+    stylers: [{ color: "#7aa6c9" }],
+  },
+  {
+    featureType: "water",
+    elementType: "labels.text.stroke",
+    stylers: [{ color: "#0a1b2b" }],
+  },
+];
+
 // Marker component with press handler and bespoke styling
 const MemoizedMarker = React.memo(({ coordinate, onPress, isSelected, isCluster, clusterSize }) => {
-  // Debug render to verify selection color updates
-  if (__DEV__ && isSelected) {
-    console.log('[Marker] selected -> gold', coordinate);
-  }
-
   const resolvedClusterSize = typeof clusterSize === 'number' ? clusterSize : 0;
   const clusterLabel = resolvedClusterSize > 999 ? '999+' : `${resolvedClusterSize}`;
 
@@ -373,6 +449,9 @@ export default function App() {
   const [dataDateRange, setDataDateRange] = useState({ min: null, max: null });
   const [isFilterExpanded, setIsFilterExpanded] = useState(false);
   const [clusterSelection, setClusterSelection] = useState(null);
+  const [isPanelExpanded, setIsPanelExpanded] = useState(false);
+  // Keep the control panel below notches/Dynamic Island
+  const panelTopOffset = 60;
   
   // Use ref to track if marker/polyline was just tapped
   const markerTappedRef = useRef(false);
@@ -611,7 +690,6 @@ export default function App() {
       setAndAnimateRegion(newRegion);
     }
 
-    console.log(`Parsed ${visits.length} visit points and ${paths.length} timeline paths`);
     Alert.alert('Success', `Loaded ${visits.length} points and ${paths.length} paths`);
   };
 
@@ -985,7 +1063,6 @@ export default function App() {
     // Hard cap number of visible paths to avoid overdraw/oom
     const pathCap = 300;
     if (paths.length > pathCap) {
-      console.warn('[DEBUG] capping visible paths to avoid overdraw:', paths.length, '->', pathCap);
       paths = downsample(paths, pathCap);
       pathsCappedRef.current = true;
     }
@@ -1008,33 +1085,22 @@ export default function App() {
     return Math.min(50, Math.max(10, Math.round(base * scale)));
   }, [mapRegion]);
 
+  // Swap to a simplified basemap when viewing large areas (country/continent)
+  const baseMapStyle = useMemo(() => {
+    const span = Math.max(mapRegion.latitudeDelta, mapRegion.longitudeDelta);
+    // Push the handoff further out to reduce visible jumps
+    return span > 8 ? atlasCountryStyle : atlasMapStyle;
+  }, [mapRegion]);
+
   useEffect(() => {
     // Avoid spam while loading; log when load completes or counts change meaningfully
     const totalPoints = visitPoints.length;
     const totalPaths = timelinePaths.length;
-    console.log(
-      `[DEBUG] render state | loading:${isLoading} | total points:${totalPoints} (filtered:${filteredPointCount}) visible points:${visiblePointsCount} clusters:${visibleClusterCount} | total paths:${totalPaths} (filtered:${filteredPathCount}) visible paths:${visiblePathsCount} | region dLat:${mapRegion.latitudeDelta?.toFixed?.(3)} dLon:${mapRegion.longitudeDelta?.toFixed?.(3)}`
-    );
-    if (visiblePointsCount > 1200) {
-      console.warn('[DEBUG] high visible point count, potential overdraw:', visiblePointsCount);
-    }
-    if (visiblePathsCount > 400) {
-      console.warn('[DEBUG] high visible path count, potential overdraw:', visiblePathsCount);
-    }
   }, [visiblePointsCount, visiblePathsCount, visibleClusterCount, isLoading, mapRegion, visitPoints.length, timelinePaths.length, filteredPointCount, filteredPathCount]);
 
   // Hide loading animation when state changes
   useEffect(() => {
     if (!isLoadingDetail) return; // Only run if loading is active
-    
-    // Log the state change
-    if (selectedPath !== null && timelinePaths[selectedPath]) {
-      console.log('📍 Route selected:', selectedPath);
-    } else if (selectedPoint !== null && visitPoints[selectedPoint]) {
-      console.log('📍 Point selected:', selectedPoint);
-    } else if (selectedPath === null && selectedPoint === null) {
-      console.log('✕ Selection cleared');
-    }
     
     // Wait for render to complete, then hide loading
     const timer = setTimeout(() => hideLoadingAnimation(), 150);
@@ -1043,13 +1109,14 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <SafeAreaView style={styles.container} edges={['left', 'right', 'bottom']}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
         {/* Map View */}
         <MapView
           ref={mapViewRef}
           style={styles.map}
           initialRegion={mapRegion}
-          customMapStyle={atlasMapStyle}
+          customMapStyle={baseMapStyle}
+          // Heatmap requires Google provider on iOS and Android
           provider={PROVIDER_GOOGLE}
           paddingAdjustmentBehavior="never" // avoid camera shifting with safe-area insets when zoomed
           mapPadding={{ top: 0, right: 0, bottom: 0, left: 0 }}
@@ -1188,227 +1255,268 @@ export default function App() {
       </MapView>
 
       {/* Control Panel */}
-      <View style={styles.controlPanel}>
-        {/* Load Data Button */}
-        <TouchableOpacity
-          style={[styles.button, styles.loadButton]}
-          onPress={loadLocationData}
-          disabled={isLoading}
-        >
-          {isLoading ? (
-            <View style={styles.loadingButtonContent}>
-              <ActivityIndicator color="#FFFFFF" size="small" />
-              {parseProgress > 0 && (
-                <Text style={styles.progressText}>
-                  {Math.round(parseProgress)}%
+      <View style={[styles.controlPanel, { top: panelTopOffset }]}>
+        <View style={styles.panelHeader}>
+          <View style={styles.brandRow}>
+            <Text style={styles.brandTitle}>WhereWasI?</Text>
+          </View>
+          <View style={styles.headerActions}>
+            <TouchableOpacity
+              style={[styles.button, styles.loadButton]}
+              onPress={loadLocationData}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <View style={styles.loadingButtonContent}>
+                  <ActivityIndicator color="#0b1220" size="small" />
+                  {parseProgress > 0 && (
+                    <Text style={styles.progressTextDark}>
+                      {Math.round(parseProgress)}%
+                    </Text>
+                  )}
+                </View>
+              ) : (
+                <Text style={styles.buttonText}>Import JSON</Text>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.ghostIconButton}
+              onPress={() => setIsPanelExpanded((v) => !v)}
+            >
+              <Text style={styles.ghostIconText}>{isPanelExpanded ? '▴' : '▾'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {visitPoints.length === 0 && !isPanelExpanded && (
+          <View style={styles.inlineSummary}>
+            <Text style={styles.inlineSummaryText}>Import your Google Timeline JSON to begin</Text>
+          </View>
+        )}
+
+        {isPanelExpanded && (
+          <>
+            <View style={styles.statRow}>
+              <View style={styles.statCard}>
+                <Text style={styles.statLabel}>Visits</Text>
+                <Text style={styles.statValue}>{filteredPointCount || 0}</Text>
+                {visitPoints.length > 0 && (
+                  <Text style={styles.statHint}>of {visitPoints.length} total</Text>
+                )}
+              </View>
+              <View style={styles.statCard}>
+                <Text style={styles.statLabel}>Routes</Text>
+                <Text style={styles.statValue}>{filteredPathCount || 0}</Text>
+                {timelinePaths.length > 0 && (
+                  <Text style={styles.statHint}>of {timelinePaths.length} total</Text>
+                )}
+              </View>
+              <View style={styles.statCard}>
+                <Text style={styles.statLabel}>Date range</Text>
+                <Text style={styles.statValueSmall}>
+                  {isDateFiltered ? filterLabel : 'All time'}
+                </Text>
+                <Text style={styles.statHint}>{datasetRangeLabelShort}</Text>
+              </View>
+            </View>
+
+            {visitPoints.length === 0 && (
+              <View style={styles.helperCard}>
+                <Text style={styles.helperTitle}>Import your Google Timeline</Text>
+                <Text style={styles.helperText}>
+                  Load your exported JSON to explore visits, routes, and density. Your data stays on your device.
+                </Text>
+              </View>
+            )}
+          </>
+        )}
+
+        {visitPoints.length > 0 && (
+          <>
+            <View style={[styles.sectionCard, styles.compactSection]}>
+
+              <View style={styles.toggleContainer}>
+                <TouchableOpacity
+                  style={[
+                    styles.toggleButton,
+                    showPoints && styles.toggleButtonActive,
+                  ]}
+                  onPress={() => {
+                    showLoadingAnimation();
+                    setTimeout(() => {
+                      setShowPoints(!showPoints);
+                    }, 150);
+                  }}
+                >
+                  <Text style={styles.toggleText}>
+                    {showPoints ? '📍' : '📍'} Points
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.toggleButton,
+                    showPolylines && styles.toggleButtonActive,
+                  ]}
+                  onPress={() => {
+                    showLoadingAnimation();
+                    setTimeout(() => {
+                      setShowPolylines(!showPolylines);
+                    }, 150);
+                  }}
+                >
+                  <Text style={styles.toggleText}>
+                    {showPolylines ? '🛣️' : '🛣️'} Routes
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.toggleButton,
+                    showHeatmap && styles.toggleButtonActive,
+                  ]}
+                  onPress={() => {
+                    const newState = !showHeatmap;
+                    showLoadingAnimation();
+                    setTimeout(() => {
+                      setShowHeatmap(newState);
+                      if (newState) {
+                        setShowPoints(false);
+                        setShowPolylines(false);
+                      }
+                    }, 150);
+                  }}
+                >
+                  <Text style={styles.toggleText}>
+                    {showHeatmap ? '🔥' : '🔥'} Heatmap
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              {(showPointsLimitedNotice || showPathsLimitedNotice) && (
+                <Text style={styles.noticeText}>
+                  {showPointsLimitedNotice ? 'Clustering dense points; zoom in for detail. ' : ''}
+                  {showPathsLimitedNotice ? 'Routes limited for performance; zoom in for more.' : ''}
                 </Text>
               )}
             </View>
-          ) : (
-            <Text style={styles.buttonText}>📁 Load Data</Text>
-          )}
-        </TouchableOpacity>
 
-        {/* Data Info */}
-        {visitPoints.length > 0 && (
-          <View style={styles.infoContainer}>
-            <Text style={styles.infoText}>
-              Showing {filteredPointCount}/{visitPoints.length} points | {filteredPathCount}/{timelinePaths.length} routes
-            </Text>
-            <Text style={styles.infoSubText}>
-              Rendering: {getVisiblePoints.length} points, {getVisiblePaths.length} paths
-            </Text>
-            {isDateFiltered && (
-              <Text style={styles.infoSubText}>
-                {formatRangeLabel(filterStartDate, filterEndDate)}
-              </Text>
-            )}
-            {(showPointsLimitedNotice || showPathsLimitedNotice) && (
-              <Text style={styles.noticeText}>
-                {showPointsLimitedNotice ? 'Clustering dense points; zoom in for detail. ' : ''}
-                {showPathsLimitedNotice ? 'Routes limited for performance; zoom in for more.' : ''}
-              </Text>
-            )}
-          </View>
-        )}
-
-        {/* Date Filter */}
-        {visitPoints.length > 0 && (
-          <View style={styles.filterCard}>
-            <TouchableOpacity
-              style={styles.filterHeader}
-              onPress={() => setIsFilterExpanded((v) => !v)}
-              activeOpacity={0.85}
-            >
-              <View style={styles.filterHeaderLeft}>
-                <View style={styles.filterTitleRow}>
-                  <Text style={styles.filterTitle}>Date Filter</Text>
-                  <View style={styles.datasetBadge}>
-                    <Text style={styles.datasetBadgeText}>{datasetRangeLabelShort}</Text>
+            <View style={[
+              styles.sectionCard,
+              styles.filterCard,
+              !isPanelExpanded && styles.filterCardCollapsed
+            ]}>
+              <TouchableOpacity
+                style={styles.filterHeader}
+                onPress={() => setIsFilterExpanded((v) => !v)}
+                activeOpacity={0.85}
+              >
+                <View style={styles.filterHeaderLeft}>
+                  <View style={styles.filterTitleRow}>
+                    <Text style={styles.filterTitle}>Date filter</Text>
+                    <View style={styles.datasetBadge}>
+                      <Text style={styles.datasetBadgeText}>{datasetRangeLabelShort}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.filterHeaderRow}>
+                    <View style={styles.currentBadge}>
+                      <Text style={styles.currentBadgeText}>Current</Text>
+                    </View>
+                    <Text style={styles.filterStatus}>
+                      {isDateFiltered ? filterLabel : 'All dates'}
+                    </Text>
                   </View>
                 </View>
-                <View style={styles.filterHeaderRow}>
-                  <View style={styles.currentBadge}>
-                    <Text style={styles.currentBadgeText}>Current</Text>
-                  </View>
-                  <Text style={styles.filterStatus}>
-                    {isDateFiltered ? filterLabel : 'All dates'}
-                  </Text>
+                <View style={styles.filterHeaderActions}>
+                  <TouchableOpacity onPress={clearDateFilter} disabled={!isDateFiltered}>
+                    <Text style={[
+                      styles.filterAction,
+                      !isDateFiltered && styles.filterActionDisabled
+                    ]}>
+                      Reset
+                    </Text>
+                  </TouchableOpacity>
+                  <Text style={styles.filterChevron}>{isFilterExpanded ? '▴' : '▾'}</Text>
                 </View>
-              </View>
-              <View style={styles.filterHeaderActions}>
-                <TouchableOpacity onPress={clearDateFilter} disabled={!isDateFiltered}>
-                  <Text style={[
-                    styles.filterAction,
-                    !isDateFiltered && styles.filterActionDisabled
-                  ]}>
-                    Reset
-                  </Text>
-                </TouchableOpacity>
-                <Text style={styles.filterChevron}>{isFilterExpanded ? '▴' : '▾'}</Text>
-              </View>
-            </TouchableOpacity>
+              </TouchableOpacity>
 
-            {isFilterExpanded && (
-              <>
-                <View style={styles.filterDivider} />
+              {isFilterExpanded && (
+                <>
+                  <View style={styles.filterDivider} />
 
-                <View style={styles.filterRangeRow}>
-                  <View style={styles.filterInputGroup}>
-                    <Text style={styles.filterInputLabel}>From</Text>
-                    <TextInput
-                      style={styles.filterInputBox}
-                      value={startInput}
-                      placeholder="YYYY-MM-DD"
-                      placeholderTextColor="#708299"
-                      onChangeText={setStartInput}
-                      onEndEditing={applyCustomRange}
-                      onSubmitEditing={applyCustomRange}
-                      returnKeyType="done"
-                    />
+                  <View style={styles.filterRangeRow}>
+                    <View style={styles.filterInputGroup}>
+                      <Text style={styles.filterInputLabel}>From</Text>
+                      <TextInput
+                        style={styles.filterInputBox}
+                        value={startInput}
+                        placeholder="YYYY-MM-DD"
+                        placeholderTextColor="#7f8ba0"
+                        onChangeText={setStartInput}
+                        onEndEditing={applyCustomRange}
+                        onSubmitEditing={applyCustomRange}
+                        returnKeyType="done"
+                      />
+                    </View>
+                    <View style={styles.filterInputGroup}>
+                      <Text style={styles.filterInputLabel}>To</Text>
+                      <TextInput
+                        style={styles.filterInputBox}
+                        value={endInput}
+                        placeholder="YYYY-MM-DD"
+                        placeholderTextColor="#7f8ba0"
+                        onChangeText={setEndInput}
+                        onEndEditing={applyCustomRange}
+                        onSubmitEditing={applyCustomRange}
+                        returnKeyType="done"
+                      />
+                    </View>
                   </View>
-                  <View style={styles.filterInputGroup}>
-                    <Text style={styles.filterInputLabel}>To</Text>
-                    <TextInput
-                      style={styles.filterInputBox}
-                      value={endInput}
-                      placeholder="YYYY-MM-DD"
-                      placeholderTextColor="#708299"
-                      onChangeText={setEndInput}
-                      onEndEditing={applyCustomRange}
-                      onSubmitEditing={applyCustomRange}
-                      returnKeyType="done"
-                    />
-                  </View>
-                </View>
 
-                <View style={styles.filterChipRow}>
-                  {[
-                    { id: 'all', label: 'All time' },
-                    { id: 'today', label: 'Today' },
-                    { id: '7d', label: 'Last 7d' },
-                    { id: '30d', label: 'Last 30d' },
-                    { id: 'year', label: 'This year' },
-                  ].map((preset) => (
+                  <View style={styles.filterChipRow}>
+                    {[
+                      { id: 'all', label: 'All time' },
+                      { id: 'today', label: 'Today' },
+                      { id: '7d', label: 'Last 7d' },
+                      { id: '30d', label: 'Last 30d' },
+                      { id: 'year', label: 'This year' },
+                    ].map((preset) => (
+                      <TouchableOpacity
+                        key={preset.id}
+                        style={[
+                          styles.filterChip,
+                          datePreset === preset.id && styles.filterChipActive,
+                        ]}
+                        onPress={() => applyDatePreset(preset.id)}
+                      >
+                        <Text style={[
+                          styles.filterChipText,
+                          datePreset === preset.id && styles.filterChipTextActive,
+                        ]}>
+                          {preset.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  <View style={styles.filterFooterRow}>
                     <TouchableOpacity
-                      key={preset.id}
-                      style={[
-                        styles.filterChip,
-                        datePreset === preset.id && styles.filterChipActive,
-                      ]}
-                      onPress={() => applyDatePreset(preset.id)}
+                      style={[styles.filterApplyButton, styles.filterApplyPrimary]}
+                      onPress={applyCustomRange}
                     >
-                      <Text style={[
-                        styles.filterChipText,
-                        datePreset === preset.id && styles.filterChipTextActive,
-                      ]}>
-                        {preset.label}
-                      </Text>
+                      <Text style={styles.filterApplyText}>Apply</Text>
                     </TouchableOpacity>
-                  ))}
-                </View>
-
-                <View style={styles.filterFooterRow}>
-                  <TouchableOpacity
-                    style={[styles.filterApplyButton, styles.filterApplyPrimary]}
-                    onPress={applyCustomRange}
-                  >
-                    <Text style={styles.filterApplyText}>Apply</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.filterApplyButton, styles.filterApplyGhost]}
-                    onPress={clearDateFilter}
-                  >
-                    <Text style={styles.filterApplyTextSecondary}>Full range</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
-          </View>
+                    <TouchableOpacity
+                      style={[styles.filterApplyButton, styles.filterApplyGhost]}
+                      onPress={clearDateFilter}
+                    >
+                      <Text style={styles.filterApplyTextSecondary}>Full range</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+            </View>
+          </>
         )}
-
-        {/* Layer Toggle Buttons */}
-        <View style={styles.toggleContainer}>
-          <TouchableOpacity
-            style={[
-              styles.toggleButton,
-              showPoints && styles.toggleButtonActive,
-            ]}
-            onPress={() => {
-              console.log('🔄 Toggle Points:', !showPoints);
-              showLoadingAnimation();
-              setTimeout(() => {
-                setShowPoints(!showPoints);
-              }, 150);
-            }}
-          >
-            <Text style={styles.toggleText}>
-              {showPoints ? '📍' : '📍'} Points
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              styles.toggleButton,
-              showPolylines && styles.toggleButtonActive,
-            ]}
-            onPress={() => {
-              console.log('🔄 Toggle Routes:', !showPolylines);
-              showLoadingAnimation();
-              setTimeout(() => {
-                setShowPolylines(!showPolylines);
-              }, 150);
-            }}
-          >
-            <Text style={styles.toggleText}>
-              {showPolylines ? '🛣️' : '🛣️'} Routes
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              styles.toggleButton,
-              showHeatmap && styles.toggleButtonActive,
-            ]}
-            onPress={() => {
-              const newState = !showHeatmap;
-              console.log('🔄 Toggle Heatmap:', newState, newState ? '(auto-hiding points & routes)' : '');
-              showLoadingAnimation();
-              setTimeout(() => {
-                setShowHeatmap(newState);
-                // When enabling heatmap, disable points and routes
-                if (newState) {
-                  setShowPoints(false);
-                  setShowPolylines(false);
-                }
-              }, 150);
-            }}
-          >
-            <Text style={styles.toggleText}>
-              {showHeatmap ? '🔥' : '🔥'} Heatmap
-            </Text>
-          </TouchableOpacity>
-        </View>
       </View>
 
       {/* Cluster selection panel */}
@@ -1628,7 +1736,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     backgroundColor: '#e53935',
     borderWidth: 2,
-    borderColor: '#b91c1c',
+    borderColor: '#ffffff',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -1693,71 +1801,196 @@ const styles = StyleSheet.create({
   },
   controlPanel: {
     position: 'absolute',
-    top: 60,
-    left: 10,
-    right: 10,
-    backgroundColor: 'rgba(10, 16, 30, 0.92)',
-    borderRadius: 12,
-    padding: 10,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
-    shadowOpacity: 0.3,
-    shadowRadius: 5,
-    elevation: 8,
+    left: 12,
+    right: 12,
+    backgroundColor: 'rgba(10, 15, 25, 0.9)',
+    borderRadius: 18,
+    padding: 12,
+    gap: 6,
+    shadowColor: 'transparent',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
+    borderWidth: 1,
+    borderColor: 'rgba(125, 211, 252, 0.18)',
+  },
+  panelHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 10,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  brandRow: {
+    flex: 1,
+    gap: 2,
+  },
+  brandTitle: {
+    color: '#E5ECF5',
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
   button: {
-    padding: 10,
-    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 8,
+    minWidth: 120,
   },
   loadButton: {
-    backgroundColor: '#38bdf8',
+    backgroundColor: '#7DD3FC',
+    shadowColor: 'transparent',
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
   },
   loadingButtonContent: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  progressText: {
-    color: '#FFFFFF',
+  progressTextDark: {
+    color: '#0b1220',
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   buttonText: {
-    color: '#FFFFFF',
+    color: '#0b1220',
     fontSize: 14,
-    fontWeight: 'bold',
+    fontWeight: '800',
+    letterSpacing: 0.2,
   },
-  infoContainer: {
-    backgroundColor: 'rgba(56, 189, 248, 0.18)',
-    padding: 8,
-    borderRadius: 6,
-    marginBottom: 8,
+  ghostIconButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  ghostIconText: {
+    color: '#E2E8F0',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  inlineSummary: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  inlineSummaryText: {
+    color: '#E2E8F0',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  statRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  statCard: {
+    flex: 1,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    gap: 4,
+  },
+  statLabel: {
+    color: '#9FB4CC',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  statValue: {
+    color: '#F8FAFC',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  statValueSmall: {
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  statHint: {
+    color: '#7DD3FC',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  helperCard: {
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    gap: 6,
+  },
+  helperTitle: {
+    color: '#E2E8F0',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  helperText: {
+    color: '#9FB4CC',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  sectionCard: {
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderRadius: 14,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    gap: 8,
+  },
+  compactSection: {
+    paddingVertical: 6,
+    paddingHorizontal: 9,
+    gap: 4,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
   },
-  infoText: {
+  sectionLabel: {
     color: '#E2E8F0',
-    fontSize: 11,
-    fontWeight: '600',
+    fontSize: 12.5,
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
-  infoSubText: {
-    color: '#9FB4CC',
-    fontSize: 9,
-    fontWeight: '500',
-    marginTop: 2,
+  sectionHint: {
+    color: '#94A3B8',
+    fontSize: 10,
+    fontWeight: '700',
   },
   filterCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderRadius: 9,
-    padding: 6,
+    backgroundColor: 'rgba(17,24,39,0.75)',
+    borderRadius: 14,
+    padding: 10,
     borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.35)',
-    marginBottom: 6,
+    borderColor: 'rgba(125, 211, 252, 0.25)',
+    marginBottom: 0,
+  },
+  filterCardCollapsed: {
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    backgroundColor: 'rgba(17,24,39,0.82)',
+    borderColor: 'rgba(125, 211, 252, 0.18)',
+    marginTop: 6,
   },
   filterHeader: {
     flexDirection: 'row',
@@ -1929,52 +2162,60 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
   noticeText: {
-    color: '#FBBF24',
-    fontSize: 10,
+    color: '#FDE68A',
+    fontSize: 11,
     fontWeight: '700',
-    marginTop: 4,
+    marginTop: 6,
+    lineHeight: 16,
   },
   toggleContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    gap: 6,
+    gap: 4,
+    flexWrap: 'wrap',
   },
   toggleButton: {
     flex: 1,
-    padding: 8,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
     alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    minWidth: 78,
   },
   toggleButtonActive: {
-    backgroundColor: 'rgba(17, 24, 39, 0.9)',
-    borderColor: '#38bdf8',
-    borderWidth: 2,
+    backgroundColor: 'rgba(125, 211, 252, 0.16)',
+    borderColor: '#7DD3FC',
+    borderWidth: 1.5,
+    shadowColor: 'transparent',
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
   },
   toggleText: {
-    color: '#E2E8F0',
-    fontSize: 10,
+    color: '#E5ECF5',
+    fontSize: 11,
     fontWeight: '700',
-    letterSpacing: 0.3,
+    letterSpacing: 0.2,
   },
   clusterPanel: {
     position: 'absolute',
     bottom: 16,
     left: 12,
     right: 12,
-    backgroundColor: 'rgba(17, 24, 39, 0.96)',
-    borderRadius: 16,
+    backgroundColor: 'rgba(10, 15, 25, 0.95)',
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    padding: 12,
+    borderColor: 'rgba(125,211,252,0.18)',
+    padding: 14,
     maxHeight: 260,
-    shadowColor: '#000',
-    shadowOpacity: 0.4,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 10,
+    shadowColor: 'transparent',
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
     zIndex: 20,
   },
   clusterPanelHeader: {
@@ -2018,8 +2259,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 10,
     paddingHorizontal: 10,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
     marginBottom: 8,
@@ -2063,23 +2304,20 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: 'rgba(15, 23, 42, 0.97)',
+    backgroundColor: 'rgba(10, 15, 25, 0.97)',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     maxHeight: '40%', // keep panel compact; content scrolls if needed
     paddingBottom: 6,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: -4,
-    },
-    shadowOpacity: 0.5,
-    shadowRadius: 8,
-    elevation: 15,
-    borderTopWidth: 2,
+    shadowColor: 'transparent',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
+    borderTopWidth: 1.5,
     borderLeftWidth: 0,
     borderRightWidth: 0,
-    borderColor: '#38bdf8',
+    borderColor: 'rgba(125,211,252,0.25)',
   },
   detailHeader: {
     flexDirection: 'row',
