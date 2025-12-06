@@ -9,6 +9,7 @@ import {
   ScrollView,
   Animated,
   InteractionManager,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView, SafeAreaProvider } from 'react-native-safe-area-context';
 import MapView, { Marker, Polyline, Heatmap, PROVIDER_GOOGLE } from 'react-native-maps';
@@ -331,6 +332,13 @@ export default function App() {
   const [parseProgress, setParseProgress] = useState(0);
   const [useViewportFiltering, setUseViewportFiltering] = useState(true);
   const [maxRenderItems, setMaxRenderItems] = useState(2000); // Soft cap; clustering/simplify handle density
+  const [filterStartDate, setFilterStartDate] = useState(null);
+  const [filterEndDate, setFilterEndDate] = useState(null);
+  const [startInput, setStartInput] = useState('');
+  const [endInput, setEndInput] = useState('');
+  const [datePreset, setDatePreset] = useState('all');
+  const [dataDateRange, setDataDateRange] = useState({ min: null, max: null });
+  const [isFilterExpanded, setIsFilterExpanded] = useState(false);
   
   // Use ref to track if marker/polyline was just tapped
   const markerTappedRef = useRef(false);
@@ -575,17 +583,243 @@ export default function App() {
     return `${hours}h ${mins}m`;
   };
 
+  const startOfDay = (date) => {
+    if (!date) return null;
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  };
+
+  const endOfDay = (date) => {
+    if (!date) return null;
+    const d = new Date(date);
+    d.setHours(23, 59, 59, 999);
+    return d;
+  };
+
+  const formatShortDate = (value) => {
+    if (!value) return 'Any time';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return 'Invalid';
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  };
+
+  const formatInputDate = (value) => {
+    if (!value) return '';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toISOString().slice(0, 10);
+  };
+
+  const parseInputToDate = (value) => {
+    if (!value) return null;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed;
+  };
+
+  const formatRangeLabel = (start, end) => {
+    if (!start && !end) return 'Showing all dates';
+    const startLabel = start ? formatShortDate(start) : 'Earliest';
+    const endLabel = end ? formatShortDate(end) : 'Latest';
+    return `${startLabel} → ${endLabel}`;
+  };
+
+  const filterLabel = useMemo(
+    () => formatRangeLabel(filterStartDate, filterEndDate),
+    [filterStartDate, filterEndDate]
+  );
+
+  const datasetRangeLabel = useMemo(() => {
+    if (dataDateRange.min && dataDateRange.max) {
+      return `Dataset span: ${formatShortDate(dataDateRange.min)} → ${formatShortDate(dataDateRange.max)}`;
+    }
+    return 'Dataset span: load data to view';
+  }, [dataDateRange]);
+
+  const datasetRangeLabelShort = useMemo(() => {
+    if (dataDateRange.min && dataDateRange.max) {
+      return `Dataset: ${formatShortDate(dataDateRange.min)} → ${formatShortDate(dataDateRange.max)}`;
+    }
+    return 'Dataset: load data';
+  }, [dataDateRange]);
+
   // Handle map region changes
   const handleRegionChangeComplete = useCallback((region) => {
     currentRegionRef.current = region;
     setMapRegion(region);
   }, []);
 
+  const dateRangeMs = useMemo(() => ({
+    start: filterStartDate ? startOfDay(filterStartDate)?.getTime?.() ?? null : null,
+    end: filterEndDate ? endOfDay(filterEndDate)?.getTime?.() ?? null : null,
+  }), [filterStartDate, filterEndDate]);
+
+  const isDateFiltered = useMemo(
+    () => dateRangeMs.start !== null || dateRangeMs.end !== null,
+    [dateRangeMs]
+  );
+
+  const isWithinDateRange = useCallback((startTime, endTime) => {
+    if (!isDateFiltered) return true;
+
+    const start = startTime ? new Date(startTime).getTime() : null;
+    const end = endTime ? new Date(endTime).getTime() : start;
+
+    if (start !== null && Number.isNaN(start)) return false;
+    if (end !== null && Number.isNaN(end)) return false;
+
+    if (dateRangeMs.start !== null && (end === null || end < dateRangeMs.start)) {
+      return false;
+    }
+    if (dateRangeMs.end !== null && (start === null || start > dateRangeMs.end)) {
+      return false;
+    }
+    return true;
+  }, [dateRangeMs, isDateFiltered]);
+
+  const filteredVisitPoints = useMemo(() => {
+    if (!isDateFiltered) return visitPoints;
+    return visitPoints.filter(point => isWithinDateRange(point?.metadata?.startTime, point?.metadata?.endTime));
+  }, [visitPoints, isDateFiltered, isWithinDateRange]);
+
+  const filteredTimelinePaths = useMemo(() => {
+    if (!isDateFiltered) return timelinePaths;
+    return timelinePaths.filter(path => isWithinDateRange(path?.metadata?.startTime, path?.metadata?.endTime));
+  }, [timelinePaths, isDateFiltered, isWithinDateRange]);
+
+  useEffect(() => {
+    if (!visitPoints.length && !timelinePaths.length) {
+      setDataDateRange({ min: null, max: null });
+      return;
+    }
+
+    let min = null;
+    let max = null;
+
+    const consider = (start, end) => {
+      const startMs = start ? new Date(start).getTime() : null;
+      const endMs = end ? new Date(end).getTime() : startMs;
+      if (startMs !== null && !Number.isNaN(startMs)) {
+        min = min === null ? startMs : Math.min(min, startMs);
+      }
+      if (endMs !== null && !Number.isNaN(endMs)) {
+        max = max === null ? endMs : Math.max(max, endMs);
+      }
+    };
+
+    visitPoints.forEach((p) => consider(p?.metadata?.startTime, p?.metadata?.endTime));
+    timelinePaths.forEach((p) => consider(p?.metadata?.startTime, p?.metadata?.endTime));
+
+    setDataDateRange({ min, max });
+  }, [visitPoints, timelinePaths]);
+
+  useEffect(() => {
+    // Keep custom inputs in sync with the applied filter
+    setStartInput(filterStartDate ? formatInputDate(filterStartDate) : '');
+    setEndInput(filterEndDate ? formatInputDate(filterEndDate) : '');
+  }, [filterStartDate, filterEndDate]);
+
+  useEffect(() => {
+    if (selectedPoint !== null) {
+      const point = visitPoints[selectedPoint];
+      if (!point || !isWithinDateRange(point?.metadata?.startTime, point?.metadata?.endTime)) {
+        setSelectedPoint(null);
+      }
+    }
+    if (selectedPath !== null) {
+      const path = timelinePaths[selectedPath];
+      if (!path || !isWithinDateRange(path?.metadata?.startTime, path?.metadata?.endTime)) {
+        setSelectedPath(null);
+      }
+    }
+  }, [dateRangeMs, visitPoints, timelinePaths, selectedPoint, selectedPath, isWithinDateRange]);
+
+  const applyDatePreset = (preset) => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    const base = dataDateRange.max ? new Date(dataDateRange.max) : new Date();
+    let start = null;
+    let end = null;
+
+    switch (preset) {
+      case 'today':
+        start = startOfDay(base);
+        end = endOfDay(base);
+        break;
+      case '7d':
+        start = startOfDay(new Date(base.getTime() - 6 * dayMs));
+        end = endOfDay(base);
+        break;
+      case '30d':
+        start = startOfDay(new Date(base.getTime() - 29 * dayMs));
+        end = endOfDay(base);
+        break;
+      case 'year':
+        start = startOfDay(new Date(base.getFullYear(), 0, 1));
+        end = endOfDay(base);
+        break;
+      default:
+        start = null;
+        end = null;
+        break;
+    }
+
+    setFilterStartDate(start);
+    setFilterEndDate(end);
+    setDatePreset(preset);
+    setStartInput(start ? formatInputDate(start) : '');
+    setEndInput(end ? formatInputDate(end) : '');
+  };
+
+  const applyCustomRange = () => {
+    const parsedStart = startInput ? parseInputToDate(startInput) : null;
+    const parsedEnd = endInput ? parseInputToDate(endInput) : null;
+
+    if (startInput && !parsedStart) {
+      Alert.alert('Invalid date', 'Use YYYY-MM-DD for the start date.');
+      return;
+    }
+    if (endInput && !parsedEnd) {
+      Alert.alert('Invalid date', 'Use YYYY-MM-DD for the end date.');
+      return;
+    }
+
+    const start = parsedStart ? startOfDay(parsedStart) : null;
+    const end = parsedEnd ? endOfDay(parsedEnd) : null;
+
+    if (!start && !end) {
+      clearDateFilter();
+      return;
+    }
+
+    if (start && end && start.getTime() > end.getTime()) {
+      Alert.alert('Invalid range', 'Start date must be before the end date.');
+      return;
+    }
+
+    setFilterStartDate(start);
+    setFilterEndDate(end);
+    setDatePreset('custom');
+  };
+
+  const clearDateFilter = () => {
+    setFilterStartDate(null);
+    setFilterEndDate(null);
+    setStartInput('');
+    setEndInput('');
+    setDatePreset('all');
+  };
+
   // Filter points based on viewport with clustering to keep everything visible without overload
   const getVisiblePoints = useMemo(() => {
     if (selectedPoint !== null) {
       const selected = visitPoints[selectedPoint];
-      if (selected && selected.latitude != null && selected.longitude != null) {
+      if (
+        selected &&
+        selected.latitude != null &&
+        selected.longitude != null &&
+        isWithinDateRange(selected?.metadata?.startTime, selected?.metadata?.endTime)
+      ) {
         return [selected];
       }
       return [];
@@ -595,11 +829,11 @@ export default function App() {
       return [];
     }
 
-    let points = visitPoints;
+    let points = filteredVisitPoints;
 
     // Apply viewport filtering if enabled
     if (useViewportFiltering) {
-      points = visitPoints.filter(point => 
+      points = filteredVisitPoints.filter(point => 
         point && point.latitude != null && point.longitude != null &&
         isCoordinateInViewport(point, currentRegionRef.current)
       );
@@ -614,7 +848,7 @@ export default function App() {
     points = clusterPoints(points, mapRegion, clusterTarget);
 
     return points;
-  }, [visitPoints, selectedPoint, selectedPath, showPoints, useViewportFiltering, maxRenderItems, mapRegion, isLoading]);
+  }, [visitPoints, filteredVisitPoints, selectedPoint, selectedPath, showPoints, useViewportFiltering, maxRenderItems, mapRegion, isLoading, isWithinDateRange]);
 
   // Filter paths based on viewport with simplification to keep everything visible
   const pathsCappedRef = useRef(false);
@@ -629,7 +863,12 @@ export default function App() {
 
     if (selectedPath !== null) {
       const selected = timelinePaths[selectedPath];
-      if (selected && Array.isArray(selected.coordinates) && selected.coordinates.length > 1) {
+      if (
+        selected &&
+        Array.isArray(selected.coordinates) &&
+        selected.coordinates.length > 1 &&
+        isWithinDateRange(selected?.metadata?.startTime, selected?.metadata?.endTime)
+      ) {
         return [selected];
       }
       return [];
@@ -639,7 +878,7 @@ export default function App() {
       return [];
     }
 
-    let paths = timelinePaths;
+    let paths = filteredTimelinePaths;
 
     // Filter out invalid paths
     paths = paths.filter(path => 
@@ -678,19 +917,21 @@ export default function App() {
     }
 
     return paths;
-  }, [timelinePaths, selectedPath, selectedPoint, showPolylines, useViewportFiltering, maxRenderItems, mapRegion]);
+  }, [timelinePaths, filteredTimelinePaths, selectedPath, selectedPoint, showPolylines, useViewportFiltering, maxRenderItems, mapRegion, isWithinDateRange, isLoading]);
 
   // Debug counts for visibility/render pressure
   const visiblePointsCount = getVisiblePoints.length;
   const visiblePathsCount = getVisiblePaths.length;
+  const filteredPointCount = filteredVisitPoints.length;
+  const filteredPathCount = filteredTimelinePaths.length;
   const visibleClusterCount = getVisiblePoints.filter(p => p?.metadata?.isCluster).length;
   const showPointsLimitedNotice = !isLoading && visibleClusterCount > 0;
   const showPathsLimitedNotice = !isLoading && selectedPath === null && (pathsCappedRef.current || visiblePathsCount >= 295);
-  // Clamp heatmap radius to safe bounds (react-native-maps expects a limited radius)
+  // Clamp heatmap radius to safe bounds (Google heatmap requires radius roughly 10–50)
   const heatmapRadius = useMemo(() => {
-    const base = 40;
+    const base = 36;
     const scale = Math.max(0.6, Math.min(2.5, 1 / Math.max(0.2, mapRegion.latitudeDelta)));
-    return Math.min(80, Math.max(20, Math.round(base * scale)));
+    return Math.min(50, Math.max(10, Math.round(base * scale)));
   }, [mapRegion]);
 
   useEffect(() => {
@@ -698,7 +939,7 @@ export default function App() {
     const totalPoints = visitPoints.length;
     const totalPaths = timelinePaths.length;
     console.log(
-      `[DEBUG] render state | loading:${isLoading} | total points:${totalPoints} visible points:${visiblePointsCount} clusters:${visibleClusterCount} | total paths:${totalPaths} visible paths:${visiblePathsCount} | region dLat:${mapRegion.latitudeDelta?.toFixed?.(3)} dLon:${mapRegion.longitudeDelta?.toFixed?.(3)}`
+      `[DEBUG] render state | loading:${isLoading} | total points:${totalPoints} (filtered:${filteredPointCount}) visible points:${visiblePointsCount} clusters:${visibleClusterCount} | total paths:${totalPaths} (filtered:${filteredPathCount}) visible paths:${visiblePathsCount} | region dLat:${mapRegion.latitudeDelta?.toFixed?.(3)} dLon:${mapRegion.longitudeDelta?.toFixed?.(3)}`
     );
     if (visiblePointsCount > 1200) {
       console.warn('[DEBUG] high visible point count, potential overdraw:', visiblePointsCount);
@@ -706,7 +947,7 @@ export default function App() {
     if (visiblePathsCount > 400) {
       console.warn('[DEBUG] high visible path count, potential overdraw:', visiblePathsCount);
     }
-  }, [visiblePointsCount, visiblePathsCount, visibleClusterCount, isLoading, mapRegion, visitPoints.length, timelinePaths.length]);
+  }, [visiblePointsCount, visiblePathsCount, visibleClusterCount, isLoading, mapRegion, visitPoints.length, timelinePaths.length, filteredPointCount, filteredPathCount]);
 
   // Hide loading animation when state changes
   useEffect(() => {
@@ -845,9 +1086,9 @@ export default function App() {
         })}
 
         {/* Render Heatmap */}
-        {showHeatmap && visitPoints.length > 0 && !selectedPoint && !selectedPath && (
+        {showHeatmap && filteredVisitPoints.length > 0 && !selectedPoint && !selectedPath && (
           <Heatmap
-            points={visitPoints}
+            points={filteredVisitPoints}
             radius={heatmapRadius}
             opacity={0.8}
             gradient={{
@@ -885,16 +1126,136 @@ export default function App() {
         {visitPoints.length > 0 && (
           <View style={styles.infoContainer}>
             <Text style={styles.infoText}>
-              Points: {visitPoints.length} | Paths: {timelinePaths.length}
+              Showing {filteredPointCount}/{visitPoints.length} points | {filteredPathCount}/{timelinePaths.length} routes
             </Text>
             <Text style={styles.infoSubText}>
               Rendering: {getVisiblePoints.length} points, {getVisiblePaths.length} paths
             </Text>
+            {isDateFiltered && (
+              <Text style={styles.infoSubText}>
+                {formatRangeLabel(filterStartDate, filterEndDate)}
+              </Text>
+            )}
             {(showPointsLimitedNotice || showPathsLimitedNotice) && (
               <Text style={styles.noticeText}>
                 {showPointsLimitedNotice ? 'Clustering dense points; zoom in for detail. ' : ''}
                 {showPathsLimitedNotice ? 'Routes limited for performance; zoom in for more.' : ''}
               </Text>
+            )}
+          </View>
+        )}
+
+        {/* Date Filter */}
+        {visitPoints.length > 0 && (
+          <View style={styles.filterCard}>
+            <TouchableOpacity
+              style={styles.filterHeader}
+              onPress={() => setIsFilterExpanded((v) => !v)}
+              activeOpacity={0.85}
+            >
+              <View style={styles.filterHeaderLeft}>
+                <View style={styles.filterTitleRow}>
+                  <Text style={styles.filterTitle}>Date Filter</Text>
+                  <View style={styles.datasetBadge}>
+                    <Text style={styles.datasetBadgeText}>{datasetRangeLabelShort}</Text>
+                  </View>
+                </View>
+                <View style={styles.filterHeaderRow}>
+                  <View style={styles.currentBadge}>
+                    <Text style={styles.currentBadgeText}>Current</Text>
+                  </View>
+                  <Text style={styles.filterStatus}>
+                    {isDateFiltered ? filterLabel : 'All dates'}
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.filterHeaderActions}>
+                <TouchableOpacity onPress={clearDateFilter} disabled={!isDateFiltered}>
+                  <Text style={[
+                    styles.filterAction,
+                    !isDateFiltered && styles.filterActionDisabled
+                  ]}>
+                    Reset
+                  </Text>
+                </TouchableOpacity>
+                <Text style={styles.filterChevron}>{isFilterExpanded ? '▴' : '▾'}</Text>
+              </View>
+            </TouchableOpacity>
+
+            {isFilterExpanded && (
+              <>
+                <View style={styles.filterDivider} />
+
+                <View style={styles.filterRangeRow}>
+                  <View style={styles.filterInputGroup}>
+                    <Text style={styles.filterInputLabel}>From</Text>
+                    <TextInput
+                      style={styles.filterInputBox}
+                      value={startInput}
+                      placeholder="YYYY-MM-DD"
+                      placeholderTextColor="#708299"
+                      onChangeText={setStartInput}
+                      onEndEditing={applyCustomRange}
+                      onSubmitEditing={applyCustomRange}
+                      returnKeyType="done"
+                    />
+                  </View>
+                  <View style={styles.filterInputGroup}>
+                    <Text style={styles.filterInputLabel}>To</Text>
+                    <TextInput
+                      style={styles.filterInputBox}
+                      value={endInput}
+                      placeholder="YYYY-MM-DD"
+                      placeholderTextColor="#708299"
+                      onChangeText={setEndInput}
+                      onEndEditing={applyCustomRange}
+                      onSubmitEditing={applyCustomRange}
+                      returnKeyType="done"
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.filterChipRow}>
+                  {[
+                    { id: 'all', label: 'All time' },
+                    { id: 'today', label: 'Today' },
+                    { id: '7d', label: 'Last 7d' },
+                    { id: '30d', label: 'Last 30d' },
+                    { id: 'year', label: 'This year' },
+                  ].map((preset) => (
+                    <TouchableOpacity
+                      key={preset.id}
+                      style={[
+                        styles.filterChip,
+                        datePreset === preset.id && styles.filterChipActive,
+                      ]}
+                      onPress={() => applyDatePreset(preset.id)}
+                    >
+                      <Text style={[
+                        styles.filterChipText,
+                        datePreset === preset.id && styles.filterChipTextActive,
+                      ]}>
+                        {preset.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <View style={styles.filterFooterRow}>
+                  <TouchableOpacity
+                    style={[styles.filterApplyButton, styles.filterApplyPrimary]}
+                    onPress={applyCustomRange}
+                  >
+                    <Text style={styles.filterApplyText}>Apply</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.filterApplyButton, styles.filterApplyGhost]}
+                    onPress={clearDateFilter}
+                  >
+                    <Text style={styles.filterApplyTextSecondary}>Full range</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
             )}
           </View>
         )}
@@ -1178,6 +1539,183 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '500',
     marginTop: 2,
+  },
+  filterCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderRadius: 9,
+    padding: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+    marginBottom: 6,
+  },
+  filterHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  filterTitle: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  filterTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  filterHeaderLeft: {
+    flex: 1,
+    gap: 2,
+  },
+  filterHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  filterStatus: {
+    color: '#C6D4E3',
+    fontSize: 10.5,
+    fontWeight: '700',
+  },
+  filterHint: {
+    color: '#9CA5B3',
+    fontSize: 10,
+    marginTop: 2,
+    marginBottom: 2,
+  },
+  filterAction: {
+    color: '#4A90E2',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  filterActionDisabled: {
+    opacity: 0.4,
+  },
+  filterHeaderActions: {
+    alignItems: 'flex-end',
+    gap: 2,
+    paddingLeft: 10,
+  },
+  filterChevron: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    marginTop: 0,
+  },
+  filterDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    marginVertical: 6,
+  },
+  filterRangeRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 6,
+  },
+  filterInputGroup: {
+    flex: 1,
+  },
+  filterInputLabel: {
+    color: '#9CA5B3',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    marginBottom: 4,
+  },
+  filterInputBox: {
+    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+    borderRadius: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    color: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: 'rgba(74, 144, 226, 0.35)',
+  },
+  filterChipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 5,
+    marginBottom: 6,
+  },
+  filterChip: {
+    paddingVertical: 4.5,
+    paddingHorizontal: 7,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  filterChipActive: {
+    backgroundColor: 'rgba(74, 144, 226, 0.22)',
+    borderColor: 'rgba(74, 144, 226, 0.8)',
+  },
+  filterChipText: {
+    color: '#C6D4E3',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  filterChipTextActive: {
+    color: '#FFFFFF',
+  },
+  filterFooterRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  filterApplyButton: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  filterApplyPrimary: {
+    backgroundColor: '#4A90E2',
+  },
+  filterApplyGhost: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  filterApplyText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  filterApplyTextSecondary: {
+    color: '#C6D4E3',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  datasetBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  datasetBadgeText: {
+    color: '#AFC3D6',
+    fontSize: 9.5,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  currentBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2.5,
+    borderRadius: 14,
+    backgroundColor: 'rgba(74, 144, 226, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(74, 144, 226, 0.4)',
+  },
+  currentBadgeText: {
+    color: '#CFE2FF',
+    fontSize: 9.5,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
   noticeText: {
     color: '#FFDD57',
