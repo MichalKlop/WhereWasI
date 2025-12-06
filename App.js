@@ -103,23 +103,42 @@ const atlasMapStyle = [
   },
 ];
 
-// Marker component with press handler
-const MemoizedMarker = React.memo(({ coordinate, onPress, isSelected }) => {
+// Marker component with press handler and bespoke styling
+const MemoizedMarker = React.memo(({ coordinate, onPress, isSelected, isCluster, clusterSize }) => {
   // Debug render to verify selection color updates
   if (__DEV__ && isSelected) {
     console.log('[Marker] selected -> gold', coordinate);
   }
 
+  const resolvedClusterSize = typeof clusterSize === 'number' ? clusterSize : 0;
+  const clusterLabel = resolvedClusterSize > 999 ? '999+' : `${resolvedClusterSize}`;
+
   return (
     <Marker
       coordinate={coordinate}
-      // Always track to force color refresh on selection changes
+      // Track view changes to ensure the custom view updates on selection
       tracksViewChanges={true}
-      // Default red; gold when selected (matches route selection)
-      pinColor={isSelected ? "#FBBF24" : "#EF4444"}
+      anchor={{ x: 0.5, y: 0.82 }} // balanced anchor to keep tails visible
+      centerOffset={{ x: 0, y: -10 }} // nudge marker up to avoid clipping
       onPress={onPress}
       stopPropagation={true}
-    />
+    >
+      {isCluster ? (
+        <View style={styles.clusterWrapper}>
+          <View style={styles.clusterBody}>
+            <Text style={styles.clusterText}>{clusterLabel}</Text>
+          </View>
+          <View style={styles.clusterTail} />
+        </View>
+      ) : (
+        <View style={styles.markerWrapper}>
+          <View style={[styles.markerBase, isSelected && styles.markerBaseSelected]}>
+            <View style={[styles.markerDot, isSelected && styles.markerDotSelected]} />
+          </View>
+          <View style={[styles.markerTail, isSelected && styles.markerTailSelected]} />
+        </View>
+      )}
+    </Marker>
   );
 });
 
@@ -179,7 +198,7 @@ const doesPathIntersectViewport = (pathCoordinates, region) => {
  * Simple grid-based clustering for markers to reduce draw calls at low zoom.
  * Returns a mix of clusters (count > 1) and single points (count === 1).
  */
-const clusterPoints = (points, region, targetCount = 800) => {
+const clusterPoints = (points, region, targetCount = 3) => {
   if (!points || points.length === 0 || !region) return [];
   if (points.length <= targetCount) return points;
 
@@ -187,8 +206,9 @@ const clusterPoints = (points, region, targetCount = 800) => {
   const latDelta = Math.max(region.latitudeDelta, 0.001);
   const lonDelta = Math.max(region.longitudeDelta, 0.001);
 
-  // More grid cells when zoomed out; fewer when zoomed in
-  const gridDiv = Math.max(10, Math.min(60, Math.round(Math.sqrt(points.length / targetCount) * 25)));
+  // Coarser grid to encourage clustering: fewer, larger cells
+  const density = Math.sqrt(points.length / targetCount);
+  const gridDiv = Math.max(2, Math.min(10, Math.round((density || 1) * 2.2)));
   const cellLat = latDelta / gridDiv;
   const cellLon = lonDelta / gridDiv;
 
@@ -200,13 +220,14 @@ const clusterPoints = (points, region, targetCount = 800) => {
     const keyLon = Math.floor(p.longitude / cellLon);
     const key = `${keyLat}_${keyLon}`;
     if (!cells.has(key)) {
-      cells.set(key, { sumLat: 0, sumLon: 0, count: 0, samples: [] });
+      cells.set(key, { sumLat: 0, sumLon: 0, count: 0, samples: [], items: [] });
     }
     const cell = cells.get(key);
     cell.sumLat += p.latitude;
     cell.sumLon += p.longitude;
     cell.count += 1;
     if (cell.samples.length < 3) cell.samples.push(p); // keep a few representatives
+    if (cell.items.length < 120) cell.items.push(p); // collect members for cluster selection (capped)
   });
 
   const clusters = [];
@@ -218,7 +239,7 @@ const clusterPoints = (points, region, targetCount = 800) => {
         latitude: cell.sumLat / cell.count,
         longitude: cell.sumLon / cell.count,
         arrayIndex: -1,
-        metadata: { isCluster: true, clusterSize: cell.count },
+        metadata: { isCluster: true, clusterSize: cell.count, members: cell.items },
       });
     }
   });
@@ -351,6 +372,7 @@ export default function App() {
   const [datePreset, setDatePreset] = useState('all');
   const [dataDateRange, setDataDateRange] = useState({ min: null, max: null });
   const [isFilterExpanded, setIsFilterExpanded] = useState(false);
+  const [clusterSelection, setClusterSelection] = useState(null);
   
   // Use ref to track if marker/polyline was just tapped
   const markerTappedRef = useRef(false);
@@ -360,6 +382,32 @@ export default function App() {
   // Animation for loading overlay
   const loadingOpacity = useRef(new Animated.Value(0)).current;
   const loadingScale = useRef(new Animated.Value(0.8)).current;
+
+  const resolvePointIndex = useCallback((point) => {
+    if (!point) return null;
+    if (point.arrayIndex != null) return point.arrayIndex;
+    if (point.metadata?.index != null) return point.metadata.index;
+    const found = visitPoints.findIndex(
+      (p) =>
+        p === point ||
+        (p.latitude === point.latitude &&
+         p.longitude === point.longitude &&
+         p.metadata?.startTime === point.metadata?.startTime)
+    );
+    return found >= 0 ? found : null;
+  }, [visitPoints]);
+
+  const handleSelectClusterMember = useCallback((member) => {
+    const pointIndex = resolvePointIndex(member);
+    if (pointIndex === null || pointIndex < 0) return;
+    markerTappedRef.current = true;
+    showLoadingAnimation();
+    setTimeout(() => {
+      setSelectedPoint(pointIndex);
+      setSelectedPath(null);
+      setClusterSelection(null);
+    }, 150);
+  }, [resolvePointIndex]);
 
   // Show loading animation immediately
   const showLoadingAnimation = () => {
@@ -865,11 +913,16 @@ export default function App() {
 
     // Cluster if very dense to keep draw calls reasonable while keeping coverage.
     // During loading, keep the target smaller to avoid overload.
-    const clusterTarget = isLoading ? 300 : Math.min(maxRenderItems, 600);
+    const hasDateFilter = Boolean(filterStartDate || filterEndDate);
+    const clusterTarget = (() => {
+      if (isLoading) return 50;
+      if (hasDateFilter) return 2; // force clustering even on smaller filtered sets
+      return Math.min(maxRenderItems, 70);
+    })();
     points = clusterPoints(points, mapRegion, clusterTarget);
 
     return points;
-  }, [visitPoints, filteredVisitPoints, selectedPoint, selectedPath, showPoints, useViewportFiltering, maxRenderItems, mapRegion, isLoading, isWithinDateRange]);
+  }, [visitPoints, filteredVisitPoints, selectedPoint, selectedPath, showPoints, useViewportFiltering, maxRenderItems, mapRegion, isLoading, isWithinDateRange, filterStartDate, filterEndDate]);
 
   // Filter paths based on viewport with simplification to keep everything visible
   const pathsCappedRef = useRef(false);
@@ -1015,6 +1068,7 @@ export default function App() {
           setTimeout(() => {
             setSelectedPoint(null);
             setSelectedPath(null);
+          setClusterSelection(null);
           }, 150);
         }}
       >
@@ -1042,9 +1096,18 @@ export default function App() {
             <MemoizedMarker
               key={markerKey}
               coordinate={coordinate}
+              isCluster={isCluster}
+              clusterSize={point.metadata?.clusterSize}
               isSelected={!isCluster && selectedPoint === originalIndex}
               onPress={() => {
                 if (isCluster) {
+                  markerTappedRef.current = true;
+                  const members = point.metadata?.members || [];
+                  setClusterSelection({
+                    coordinate,
+                    count: point.metadata?.clusterSize || members.length,
+                    members,
+                  });
                   return;
                 }
                 markerTappedRef.current = true;
@@ -1052,6 +1115,7 @@ export default function App() {
                 setTimeout(() => {
                   setSelectedPoint(originalIndex);
                   setSelectedPath(null);
+                  setClusterSelection(null);
                 }, 150);
               }}
             />
@@ -1347,6 +1411,56 @@ export default function App() {
         </View>
       </View>
 
+      {/* Cluster selection panel */}
+      {clusterSelection?.members?.length > 0 && (
+        <View style={styles.clusterPanel}>
+          <View style={styles.clusterPanelHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.clusterPanelTitle}>Cluster of {clusterSelection.count} points</Text>
+              <Text style={styles.clusterPanelSubtitle}>Tap a visit to view details</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.clusterCloseButton}
+              onPress={() => setClusterSelection(null)}
+            >
+              <Text style={styles.clusterCloseText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={styles.clusterList} showsVerticalScrollIndicator={false}>
+            {clusterSelection.members.map((member, idx) => {
+              const pointIndex = resolvePointIndex(member);
+              return (
+                <TouchableOpacity
+                  key={`${member?.metadata?.startTime || idx}-${member?.latitude}-${member?.longitude}-${idx}`}
+                  style={styles.clusterItem}
+                  onPress={() => handleSelectClusterMember(member)}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.clusterItemLeft}>
+                    <Text style={styles.clusterItemTitle}>
+                      {member?.metadata?.semanticType || 'Visit'}
+                    </Text>
+                    <Text style={styles.clusterItemMeta}>
+                      {formatDate(member?.metadata?.startTime)}
+                    </Text>
+                  </View>
+                  <View style={styles.clusterItemRight}>
+                    <Text style={styles.clusterItemCoords}>
+                      {member?.latitude?.toFixed?.(3)}, {member?.longitude?.toFixed?.(3)}
+                    </Text>
+                    {member?.metadata?.probability && (
+                      <Text style={styles.clusterItemBadge}>
+                        {(parseFloat(member.metadata.probability) * 100).toFixed(0)}%
+                      </Text>
+                    )}
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
+
       {/* Detail Panel */}
       {(selectedPoint !== null || selectedPath !== null) && (
         <View style={styles.detailPanel}>
@@ -1502,6 +1616,80 @@ const styles = StyleSheet.create({
   },
   map: {
     flex: 1,
+  },
+  markerWrapper: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingBottom: 18, // extra padding to prevent tail clipping
+  },
+  markerBase: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#e53935',
+    borderWidth: 2,
+    borderColor: '#b91c1c',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  markerBaseSelected: {
+    backgroundColor: '#f59e0b',
+    borderColor: '#d97706',
+  },
+  markerDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#ffffff',
+  },
+  markerDotSelected: {
+    backgroundColor: '#111827',
+  },
+  markerTail: {
+    marginTop: -2,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 7,
+    borderRightWidth: 7,
+    borderTopWidth: 10,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderTopColor: '#e53935',
+  },
+  markerTailSelected: {
+    borderTopColor: '#f59e0b',
+  },
+  clusterWrapper: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingBottom: 10, // moderate padding; smaller body prevents clipping
+  },
+  clusterBody: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#0f172a',
+    borderWidth: 2,
+    borderColor: '#e53935',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  clusterText: {
+    color: '#E2E8F0',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  clusterTail: {
+    marginTop: -1,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 7,
+    borderRightWidth: 7,
+    borderTopWidth: 9,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderTopColor: '#e53935',
   },
   controlPanel: {
     position: 'absolute',
@@ -1770,6 +1958,105 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
     letterSpacing: 0.3,
+  },
+  clusterPanel: {
+    position: 'absolute',
+    bottom: 16,
+    left: 12,
+    right: 12,
+    backgroundColor: 'rgba(17, 24, 39, 0.96)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    padding: 12,
+    maxHeight: 260,
+    shadowColor: '#000',
+    shadowOpacity: 0.4,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 10,
+    zIndex: 20,
+  },
+  clusterPanelHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    gap: 8,
+  },
+  clusterPanelTitle: {
+    color: '#E2E8F0',
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  clusterPanelSubtitle: {
+    color: '#9CA5B3',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  clusterCloseButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  clusterCloseText: {
+    color: '#E2E8F0',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  clusterList: {
+    maxHeight: 200,
+  },
+  clusterItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    marginBottom: 8,
+  },
+  clusterItemLeft: {
+    flex: 1,
+    gap: 2,
+  },
+  clusterItemTitle: {
+    color: '#E2E8F0',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  clusterItemMeta: {
+    color: '#9CA5B3',
+    fontSize: 11,
+  },
+  clusterItemRight: {
+    alignItems: 'flex-end',
+    gap: 4,
+    paddingLeft: 10,
+  },
+  clusterItemCoords: {
+    color: '#C9D8EA',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  clusterItemBadge: {
+    color: '#E2E8F0',
+    fontSize: 11,
+    fontWeight: '700',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: 'rgba(229,57,53,0.18)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(229,57,53,0.4)',
   },
   detailPanel: {
     position: 'absolute',
