@@ -16,95 +16,107 @@ import MapView, { Marker, Polyline, Heatmap, PROVIDER_GOOGLE } from 'react-nativ
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 
-// Custom dark mode map style
-const darkMapStyle = [
-  { elementType: "geometry", stylers: [{ color: "#242f3e" }] },
-  { elementType: "labels.text.stroke", stylers: [{ color: "#242f3e" }] },
-  { elementType: "labels.text.fill", stylers: [{ color: "#746855" }] },
+// Professional dark atlas map style
+const atlasMapStyle = [
+  { elementType: "geometry", stylers: [{ color: "#0b1220" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#9fb4cc" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#0b1220" }] },
   {
-    featureType: "administrative.locality",
+    featureType: "administrative",
     elementType: "labels.text.fill",
-    stylers: [{ color: "#d59563" }],
+    stylers: [{ color: "#9fb4cc" }],
+  },
+  {
+    featureType: "poi",
+    elementType: "geometry",
+    stylers: [{ color: "#0f172a" }],
   },
   {
     featureType: "poi",
     elementType: "labels.text.fill",
-    stylers: [{ color: "#d59563" }],
+    stylers: [{ color: "#a4c2e2" }],
   },
   {
     featureType: "poi.park",
     elementType: "geometry",
-    stylers: [{ color: "#263c3f" }],
+    stylers: [{ color: "#123022" }],
   },
   {
     featureType: "poi.park",
     elementType: "labels.text.fill",
-    stylers: [{ color: "#6b9a76" }],
+    stylers: [{ color: "#7fb28d" }],
   },
   {
     featureType: "road",
     elementType: "geometry",
-    stylers: [{ color: "#38414e" }],
+    stylers: [{ color: "#1d2a3c" }],
   },
   {
     featureType: "road",
     elementType: "geometry.stroke",
-    stylers: [{ color: "#212a37" }],
+    stylers: [{ color: "#101827" }],
   },
   {
     featureType: "road",
     elementType: "labels.text.fill",
-    stylers: [{ color: "#9ca5b3" }],
+    stylers: [{ color: "#9fb4cc" }],
   },
   {
     featureType: "road.highway",
     elementType: "geometry",
-    stylers: [{ color: "#746855" }],
+    stylers: [{ color: "#2c3f57" }],
   },
   {
     featureType: "road.highway",
     elementType: "geometry.stroke",
-    stylers: [{ color: "#1f2835" }],
+    stylers: [{ color: "#1a2433" }],
   },
   {
     featureType: "road.highway",
     elementType: "labels.text.fill",
-    stylers: [{ color: "#f3d19c" }],
+    stylers: [{ color: "#c6ddff" }],
   },
   {
     featureType: "transit",
     elementType: "geometry",
-    stylers: [{ color: "#2f3948" }],
+    stylers: [{ color: "#152136" }],
   },
   {
     featureType: "transit.station",
     elementType: "labels.text.fill",
-    stylers: [{ color: "#d59563" }],
+    stylers: [{ color: "#a4c2e2" }],
   },
   {
     featureType: "water",
     elementType: "geometry",
-    stylers: [{ color: "#17263c" }],
+    stylers: [{ color: "#0a1b2b" }],
   },
   {
     featureType: "water",
     elementType: "labels.text.fill",
-    stylers: [{ color: "#515c6d" }],
+    stylers: [{ color: "#7aa6c9" }],
   },
   {
     featureType: "water",
     elementType: "labels.text.stroke",
-    stylers: [{ color: "#17263c" }],
+    stylers: [{ color: "#0a1b2b" }],
   },
 ];
 
 // Marker component with press handler
 const MemoizedMarker = React.memo(({ coordinate, onPress, isSelected }) => {
+  // Debug render to verify selection color updates
+  if (__DEV__ && isSelected) {
+    console.log('[Marker] selected -> gold', coordinate);
+  }
+
   return (
     <Marker
       coordinate={coordinate}
-      tracksViewChanges={false}
-      pinColor={isSelected ? "#00FF00" : "#FF6B6B"}
+      // Always track to force color refresh on selection changes
+      tracksViewChanges={true}
+      // Default red; gold when selected (matches route selection)
+      pinColor={isSelected ? "#FBBF24" : "#EF4444"}
       onPress={onPress}
       stopPropagation={true}
     />
@@ -548,8 +560,7 @@ export default function App() {
         latitudeDelta: 0.5,
         longitudeDelta: 0.5,
       };
-      setMapRegion(newRegion);
-      currentRegionRef.current = newRegion;
+      setAndAnimateRegion(newRegion);
     }
 
     console.log(`Parsed ${visits.length} visit points and ${paths.length} timeline paths`);
@@ -648,6 +659,16 @@ export default function App() {
   const handleRegionChangeComplete = useCallback((region) => {
     currentRegionRef.current = region;
     setMapRegion(region);
+  }, []);
+
+  // Avoid making MapView fully controlled (prevents subtle camera drift on zoom).
+  // Use this when we explicitly need to center/animate to a region.
+  const setAndAnimateRegion = useCallback((region) => {
+    currentRegionRef.current = region;
+    setMapRegion(region);
+    if (mapViewRef.current && region) {
+      mapViewRef.current.animateToRegion(region, 400);
+    }
   }, []);
 
   const dateRangeMs = useMemo(() => ({
@@ -975,9 +996,10 @@ export default function App() {
           ref={mapViewRef}
           style={styles.map}
           initialRegion={mapRegion}
-          region={visitPoints.length > 0 ? mapRegion : undefined}
-          customMapStyle={darkMapStyle}
+          customMapStyle={atlasMapStyle}
           provider={PROVIDER_GOOGLE}
+          paddingAdjustmentBehavior="never" // avoid camera shifting with safe-area insets when zoomed
+          mapPadding={{ top: 0, right: 0, bottom: 0, left: 0 }}
           onRegionChangeComplete={handleRegionChangeComplete}
           onPress={(e) => {
           // Only deselect if we're clicking on the map itself, not markers/polylines
@@ -1006,9 +1028,10 @@ export default function App() {
           const isCluster = point.metadata?.isCluster;
           // Use arrayIndex/metadata.index for real points; clusters just use loop index
           const originalIndex = isCluster ? -1 : (point.arrayIndex ?? point.metadata?.index ?? index);
+          // Include selection state in key to force remount when toggling selection (helps pinColor refresh)
           const markerKey = isCluster
             ? `cluster-${index}-${point.latitude}-${point.longitude}`
-            : `marker-${originalIndex}`;
+            : `marker-${originalIndex}-${selectedPoint === originalIndex ? 'selected' : 'normal'}`;
 
           const coordinate = {
             latitude: point.latitude,
@@ -1077,7 +1100,7 @@ export default function App() {
             <Polyline
               key={`polyline-visible-${originalIndex}`}
               coordinates={validCoordinates}
-              strokeColor={isSelected ? "#00FF00" : "#4A90E2"}
+              strokeColor={isSelected ? "#FBBF24" : "#7DD3FC"}
               strokeWidth={isSelected ? 6 : 4}
               lineCap="round"
               lineJoin="round"
@@ -1092,8 +1115,8 @@ export default function App() {
             radius={heatmapRadius}
             opacity={0.8}
             gradient={{
-              colors: ['#00FF00', '#FFFF00', '#FF0000'],
-              startPoints: [0.1, 0.5, 1.0],
+              colors: ['#0EA5E9', '#8B5CF6', '#FBBF24'],
+              startPoints: [0.15, 0.55, 1],
               colorMapSize: 256,
             }}
           />
@@ -1462,7 +1485,7 @@ export default function App() {
           ]}
         >
           <View style={styles.loadingCard}>
-            <ActivityIndicator size="large" color="#4A90E2" />
+            <ActivityIndicator size="large" color="#38bdf8" />
             <Text style={styles.loadingText}>Loading details...</Text>
           </View>
         </Animated.View>
@@ -1475,7 +1498,7 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a1a1a',
+    backgroundColor: '#0b1220',
   },
   map: {
     flex: 1,
@@ -1485,7 +1508,7 @@ const styles = StyleSheet.create({
     top: 60,
     left: 10,
     right: 10,
-    backgroundColor: 'rgba(26, 26, 26, 0.95)',
+    backgroundColor: 'rgba(10, 16, 30, 0.92)',
     borderRadius: 12,
     padding: 10,
     shadowColor: '#000',
@@ -1505,7 +1528,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   loadButton: {
-    backgroundColor: '#4A90E2',
+    backgroundColor: '#38bdf8',
   },
   loadingButtonContent: {
     flexDirection: 'row',
@@ -1523,29 +1546,29 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   infoContainer: {
-    backgroundColor: 'rgba(74, 144, 226, 0.2)',
+    backgroundColor: 'rgba(56, 189, 248, 0.18)',
     padding: 8,
     borderRadius: 6,
     marginBottom: 8,
     alignItems: 'center',
   },
   infoText: {
-    color: '#FFFFFF',
+    color: '#E2E8F0',
     fontSize: 11,
     fontWeight: '600',
   },
   infoSubText: {
-    color: '#9CA5B3',
+    color: '#9FB4CC',
     fontSize: 9,
     fontWeight: '500',
     marginTop: 2,
   },
   filterCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
     borderRadius: 9,
     padding: 6,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.06)',
+    borderColor: 'rgba(56, 189, 248, 0.35)',
     marginBottom: 6,
   },
   filterHeader: {
@@ -1555,7 +1578,7 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   filterTitle: {
-    color: '#FFFFFF',
+    color: '#E2E8F0',
     fontSize: 11,
     fontWeight: '700',
   },
@@ -1576,7 +1599,7 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
   },
   filterStatus: {
-    color: '#C6D4E3',
+    color: '#C9D8EA',
     fontSize: 10.5,
     fontWeight: '700',
   },
@@ -1587,7 +1610,7 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   filterAction: {
-    color: '#4A90E2',
+    color: '#7DD3FC',
     fontSize: 12,
     fontWeight: '700',
   },
@@ -1600,13 +1623,13 @@ const styles = StyleSheet.create({
     paddingLeft: 10,
   },
   filterChevron: {
-    color: '#FFFFFF',
+    color: '#E2E8F0',
     fontSize: 11,
     marginTop: 0,
   },
   filterDivider: {
     height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
     marginVertical: 6,
   },
   filterRangeRow: {
@@ -1631,7 +1654,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     color: '#FFFFFF',
     borderWidth: 1,
-    borderColor: 'rgba(74, 144, 226, 0.35)',
+    borderColor: 'rgba(125, 211, 252, 0.4)',
   },
   filterChipRow: {
     flexDirection: 'row',
@@ -1643,22 +1666,22 @@ const styles = StyleSheet.create({
     paddingVertical: 4.5,
     paddingHorizontal: 7,
     borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   filterChipActive: {
-    backgroundColor: 'rgba(74, 144, 226, 0.22)',
-    borderColor: 'rgba(74, 144, 226, 0.8)',
+    backgroundColor: 'rgba(125, 211, 252, 0.18)',
+    borderColor: '#7DD3FC',
   },
   filterChipText: {
-    color: '#C6D4E3',
+    color: '#C9D8EA',
     fontSize: 10,
     fontWeight: '700',
     letterSpacing: 0.2,
   },
   filterChipTextActive: {
-    color: '#FFFFFF',
+    color: '#E2E8F0',
   },
   filterFooterRow: {
     flexDirection: 'row',
@@ -1672,7 +1695,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   filterApplyPrimary: {
-    backgroundColor: '#4A90E2',
+    backgroundColor: '#38bdf8',
   },
   filterApplyGhost: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
@@ -1685,7 +1708,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   filterApplyTextSecondary: {
-    color: '#C6D4E3',
+    color: '#C9D8EA',
     fontSize: 11,
     fontWeight: '700',
   },
@@ -1693,12 +1716,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.06)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
+    borderColor: 'rgba(255,255,255,0.1)',
   },
   datasetBadgeText: {
-    color: '#AFC3D6',
+    color: '#B8CBE2',
     fontSize: 9.5,
     fontWeight: '700',
     letterSpacing: 0.2,
@@ -1707,18 +1730,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2.5,
     borderRadius: 14,
-    backgroundColor: 'rgba(74, 144, 226, 0.12)',
+    backgroundColor: 'rgba(125, 211, 252, 0.16)',
     borderWidth: 1,
-    borderColor: 'rgba(74, 144, 226, 0.4)',
+    borderColor: '#7DD3FC',
   },
   currentBadgeText: {
-    color: '#CFE2FF',
+    color: '#D7E9FF',
     fontSize: 9.5,
     fontWeight: '700',
     letterSpacing: 0.2,
   },
   noticeText: {
-    color: '#FFDD57',
+    color: '#FBBF24',
     fontSize: 10,
     fontWeight: '700',
     marginTop: 4,
@@ -1732,18 +1755,18 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 8,
     borderRadius: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
     alignItems: 'center',
     borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderColor: 'rgba(255, 255, 255, 0.12)',
   },
   toggleButtonActive: {
-    backgroundColor: 'rgba(74, 144, 226, 0.5)',
-    borderColor: '#4A90E2',
+    backgroundColor: 'rgba(17, 24, 39, 0.9)',
+    borderColor: '#38bdf8',
     borderWidth: 2,
   },
   toggleText: {
-    color: '#FFFFFF',
+    color: '#E2E8F0',
     fontSize: 10,
     fontWeight: '700',
     letterSpacing: 0.3,
@@ -1753,7 +1776,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: 'rgba(26, 26, 26, 0.97)',
+    backgroundColor: 'rgba(15, 23, 42, 0.97)',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     maxHeight: '40%', // keep panel compact; content scrolls if needed
@@ -1769,7 +1792,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 2,
     borderLeftWidth: 0,
     borderRightWidth: 0,
-    borderColor: '#4A90E2',
+    borderColor: '#38bdf8',
   },
   detailHeader: {
     flexDirection: 'row',
@@ -1778,7 +1801,7 @@ const styles = StyleSheet.create({
     padding: 12,
     paddingTop: 16,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(74, 144, 226, 0.3)',
+    borderBottomColor: 'rgba(56, 189, 248, 0.35)',
   },
   detailTitle: {
     color: '#FFFFFF',
@@ -1843,19 +1866,19 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   detailLabel: {
-    color: '#9CA5B3',
+    color: '#9FB4CC',
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 0.3,
     marginBottom: 4,
   },
   detailValue: {
-    color: '#FFFFFF',
+    color: '#E2E8F0',
     fontSize: 14,
     fontWeight: '600',
   },
   detailSubValue: {
-    color: '#C6D4E3',
+    color: '#C9D8EA',
     fontSize: 11,
     fontWeight: '600',
     marginTop: 2,
@@ -1879,15 +1902,15 @@ const styles = StyleSheet.create({
     bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    backgroundColor: 'rgba(5, 8, 15, 0.75)',
     zIndex: 1000,
   },
   loadingCard: {
-    backgroundColor: 'rgba(26, 26, 26, 0.95)',
+    backgroundColor: 'rgba(15, 23, 42, 0.98)',
     borderRadius: 20,
     padding: 30,
     alignItems: 'center',
-    shadowColor: '#4A90E2',
+    shadowColor: '#38bdf8',
     shadowOffset: {
       width: 0,
       height: 8,
@@ -1896,11 +1919,11 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 15,
     borderWidth: 2,
-    borderColor: '#4A90E2',
+    borderColor: '#38bdf8',
     minWidth: 200,
   },
   loadingText: {
-    color: '#FFFFFF',
+    color: '#E2E8F0',
     fontSize: 16,
     fontWeight: '600',
     marginTop: 15,
