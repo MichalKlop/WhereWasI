@@ -1427,14 +1427,6 @@ export default function App() {
                   </View>
                 </View>
                 <View style={styles.filterHeaderActions}>
-                  <TouchableOpacity onPress={clearDateFilter} disabled={!isDateFiltered}>
-                    <Text style={[
-                      styles.filterAction,
-                      !isDateFiltered && styles.filterActionDisabled
-                    ]}>
-                      Reset
-                    </Text>
-                  </TouchableOpacity>
                   <Text style={styles.filterChevron}>{isFilterExpanded ? '▴' : '▾'}</Text>
                 </View>
               </TouchableOpacity>
@@ -1501,15 +1493,9 @@ export default function App() {
                   <View style={styles.filterFooterRow}>
                     <TouchableOpacity
                       style={[styles.filterApplyButton, styles.filterApplyPrimary]}
-                      onPress={applyCustomRange}
-                    >
-                      <Text style={styles.filterApplyText}>Apply</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.filterApplyButton, styles.filterApplyGhost]}
                       onPress={clearDateFilter}
                     >
-                      <Text style={styles.filterApplyTextSecondary}>Full range</Text>
+                      <Text style={styles.filterApplyText}>Reset</Text>
                     </TouchableOpacity>
                   </View>
                 </>
@@ -2039,19 +2025,18 @@ const styles = StyleSheet.create({
     opacity: 0.4,
   },
   filterHeaderActions: {
-    alignItems: 'flex-end',
-    gap: 2,
-    paddingLeft: 10,
+    alignItems: 'center',
+    paddingLeft: 6,
   },
   filterChevron: {
     color: '#E2E8F0',
-    fontSize: 11,
+    fontSize: 13,
     marginTop: 0,
   },
   filterDivider: {
     height: 1,
     backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    marginVertical: 6,
+    marginVertical: 2,
   },
   filterRangeRow: {
     flexDirection: 'row',
