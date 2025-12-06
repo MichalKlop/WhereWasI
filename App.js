@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   StyleSheet,
   View,
@@ -98,7 +98,7 @@ const darkMapStyle = [
 ];
 
 // Marker component with press handler
-const MemoizedMarker = ({ coordinate, onPress, isSelected }) => {
+const MemoizedMarker = React.memo(({ coordinate, onPress, isSelected }) => {
   return (
     <Marker
       coordinate={coordinate}
@@ -108,7 +108,7 @@ const MemoizedMarker = ({ coordinate, onPress, isSelected }) => {
       stopPropagation={true}
     />
   );
-};
+});
 
 /**
  * Parse a geo coordinate string into a coordinate object
@@ -134,6 +134,181 @@ const parseGeoString = (geoString) => {
 };
 
 /**
+ * Check if a coordinate is within the visible map region
+ */
+const isCoordinateInViewport = (coordinate, region) => {
+  if (!coordinate || !region) return false;
+  
+  const latMin = region.latitude - region.latitudeDelta / 2;
+  const latMax = region.latitude + region.latitudeDelta / 2;
+  const lonMin = region.longitude - region.longitudeDelta / 2;
+  const lonMax = region.longitude + region.longitudeDelta / 2;
+  
+  return (
+    coordinate.latitude >= latMin &&
+    coordinate.latitude <= latMax &&
+    coordinate.longitude >= lonMin &&
+    coordinate.longitude <= lonMax
+  );
+};
+
+/**
+ * Check if a path intersects with the viewport
+ */
+const doesPathIntersectViewport = (pathCoordinates, region) => {
+  if (!pathCoordinates || pathCoordinates.length === 0 || !region) return false;
+  
+  // Quick check: if any point is in viewport, show the path
+  return pathCoordinates.some(coord => isCoordinateInViewport(coord, region));
+};
+
+/**
+ * Simple grid-based clustering for markers to reduce draw calls at low zoom.
+ * Returns a mix of clusters (count > 1) and single points (count === 1).
+ */
+const clusterPoints = (points, region, targetCount = 800) => {
+  if (!points || points.length === 0 || !region) return [];
+  if (points.length <= targetCount) return points;
+
+  // Derive grid size from zoom level and density
+  const latDelta = Math.max(region.latitudeDelta, 0.001);
+  const lonDelta = Math.max(region.longitudeDelta, 0.001);
+
+  // More grid cells when zoomed out; fewer when zoomed in
+  const gridDiv = Math.max(10, Math.min(60, Math.round(Math.sqrt(points.length / targetCount) * 25)));
+  const cellLat = latDelta / gridDiv;
+  const cellLon = lonDelta / gridDiv;
+
+  const cells = new Map();
+
+  points.forEach((p) => {
+    if (!p || p.latitude == null || p.longitude == null) return;
+    const keyLat = Math.floor(p.latitude / cellLat);
+    const keyLon = Math.floor(p.longitude / cellLon);
+    const key = `${keyLat}_${keyLon}`;
+    if (!cells.has(key)) {
+      cells.set(key, { sumLat: 0, sumLon: 0, count: 0, samples: [] });
+    }
+    const cell = cells.get(key);
+    cell.sumLat += p.latitude;
+    cell.sumLon += p.longitude;
+    cell.count += 1;
+    if (cell.samples.length < 3) cell.samples.push(p); // keep a few representatives
+  });
+
+  const clusters = [];
+  cells.forEach((cell) => {
+    if (cell.count === 1) {
+      clusters.push(cell.samples[0]);
+    } else {
+      clusters.push({
+        latitude: cell.sumLat / cell.count,
+        longitude: cell.sumLon / cell.count,
+        arrayIndex: -1,
+        metadata: { isCluster: true, clusterSize: cell.count },
+      });
+    }
+  });
+
+  return clusters;
+};
+
+/**
+ * Ramer-Douglas-Peucker polyline simplification for routes.
+ * Reduces vertex count while preserving shape within tolerance.
+ */
+const simplifyPath = (points, tolerance) => {
+  if (!points || points.length < 3) return points || [];
+  const sqTolerance = tolerance * tolerance;
+
+  const getSqDist = (p1, p2) => {
+    const dx = p1.latitude - p2.latitude;
+    const dy = p1.longitude - p2.longitude;
+    return dx * dx + dy * dy;
+  };
+
+  const getSqSegDist = (p, p1, p2) => {
+    let x = p1.latitude;
+    let y = p1.longitude;
+    let dx = p2.latitude - x;
+    let dy = p2.longitude - y;
+
+    if (dx !== 0 || dy !== 0) {
+      const t = ((p.latitude - x) * dx + (p.longitude - y) * dy) / (dx * dx + dy * dy);
+      if (t > 1) {
+        x = p2.latitude;
+        y = p2.longitude;
+      } else if (t > 0) {
+        x += dx * t;
+        y += dy * t;
+      }
+    }
+
+    dx = p.latitude - x;
+    dy = p.longitude - y;
+    return dx * dx + dy * dy;
+  };
+
+  const simplifyRadialDist = (pts, sqTol) => {
+    let prev = pts[0];
+    const newPts = [prev];
+    for (let i = 1; i < pts.length; i++) {
+      const pt = pts[i];
+      if (getSqDist(pt, prev) > sqTol) {
+        newPts.push(pt);
+        prev = pt;
+      }
+    }
+    if (prev !== pts[pts.length - 1]) newPts.push(pts[pts.length - 1]);
+    return newPts;
+  };
+
+  const simplifyDouglasPeucker = (pts, sqTol) => {
+    const last = pts.length - 1;
+    const stack = [[0, last]];
+    const keep = new Array(pts.length).fill(false);
+    keep[0] = keep[last] = true;
+
+    while (stack.length) {
+      const [first, end] = stack.pop();
+      let maxSqDist = 0;
+      let index = -1;
+      for (let i = first + 1; i < end; i++) {
+        const sqDist = getSqSegDist(pts[i], pts[first], pts[end]);
+        if (sqDist > maxSqDist) {
+          index = i;
+          maxSqDist = sqDist;
+        }
+      }
+      if (maxSqDist > sqTol) {
+        keep[index] = true;
+        stack.push([first, index], [index, end]);
+      }
+    }
+    return pts.filter((_, i) => keep[i]);
+  };
+
+  const pts = simplifyRadialDist(points, sqTolerance);
+  return simplifyDouglasPeucker(pts, sqTolerance);
+};
+
+/**
+ * Downsample array to reduce density for better performance
+ */
+const downsample = (array, maxItems) => {
+  if (array.length <= maxItems) return array;
+  
+  const step = Math.ceil(array.length / maxItems);
+  const result = [];
+  
+  for (let i = 0; i < array.length; i += step) {
+    result.push(array[i]);
+  }
+  
+  return result;
+};
+
+/**
  * Main App Component
  */
 export default function App() {
@@ -153,9 +328,14 @@ export default function App() {
     latitudeDelta: 0.5,
     longitudeDelta: 0.5,
   });
+  const [parseProgress, setParseProgress] = useState(0);
+  const [useViewportFiltering, setUseViewportFiltering] = useState(true);
+  const [maxRenderItems, setMaxRenderItems] = useState(2000); // Soft cap; clustering/simplify handle density
   
   // Use ref to track if marker/polyline was just tapped
   const markerTappedRef = useRef(false);
+  const mapViewRef = useRef(null);
+  const currentRegionRef = useRef(mapRegion);
   
   // Animation for loading overlay
   const loadingOpacity = useRef(new Animated.Value(0)).current;
@@ -201,11 +381,12 @@ export default function App() {
   };
 
   /**
-   * Handle file selection and data parsing
+   * Handle file selection and data parsing with chunked processing
    */
   const loadLocationData = async () => {
     try {
       setIsLoading(true);
+      setParseProgress(0);
       
       // Open document picker
       const result = await DocumentPicker.getDocumentAsync({
@@ -235,102 +416,136 @@ export default function App() {
         return;
       }
 
-      // Parse the data
-      const { visitCount, pathCount } = parseLocationData(locationData);
-      
-      Alert.alert('Success', `Loaded ${visitCount} points and ${pathCount} paths`);
+      // Parse the data in chunks to avoid blocking the UI
+      await parseLocationDataChunked(locationData);
       
     } catch (error) {
       console.error('Error loading file:', error);
       Alert.alert('Error', `Failed to load file: ${error.message}`);
     } finally {
       setIsLoading(false);
+      setParseProgress(0);
     }
   };
 
   /**
-   * Parse location data from the imported JSON
-   * @param {array} data - Array of location history objects
+   * Parse location data in chunks to avoid blocking the UI
    */
-  const parseLocationData = (data) => {
+  const parseLocationDataChunked = async (data) => {
     const visits = [];
     const paths = [];
     let firstValidCoordinate = null;
+    
+    const CHUNK_SIZE = 500; // Process 500 items at a time
+    const totalItems = data.length;
+    let processedItems = 0;
 
-    data.forEach((item, index) => {
-      // Parse visit objects (for points and heatmap)
-      if (item.visit && item.visit.topCandidate && item.visit.topCandidate.placeLocation) {
-        const coordinate = parseGeoString(item.visit.topCandidate.placeLocation);
-        if (coordinate) {
-          const visitData = {
-            ...coordinate,
-            metadata: {
-              index,
-              startTime: item.startTime,
-              endTime: item.endTime,
-              semanticType: item.visit.topCandidate.semanticType,
-              probability: item.visit.topCandidate.probability,
-              placeID: item.visit.topCandidate.placeID,
+    // Process data in chunks
+    for (let i = 0; i < totalItems; i += CHUNK_SIZE) {
+      const chunk = data.slice(i, Math.min(i + CHUNK_SIZE, totalItems));
+      
+      // Process chunk
+      chunk.forEach((item, chunkIndex) => {
+        const index = i + chunkIndex;
+        
+        // Parse visit objects (for points and heatmap)
+        if (item.visit && item.visit.topCandidate && item.visit.topCandidate.placeLocation) {
+          const coordinate = parseGeoString(item.visit.topCandidate.placeLocation);
+          if (coordinate) {
+            const visitData = {
+              ...coordinate,
+              arrayIndex: visits.length,
+              metadata: {
+                index,
+                startTime: item.startTime,
+                endTime: item.endTime,
+                semanticType: item.visit.topCandidate.semanticType,
+                probability: item.visit.topCandidate.probability,
+                placeID: item.visit.topCandidate.placeID,
+              }
+            };
+            visits.push(visitData);
+            if (!firstValidCoordinate) {
+              firstValidCoordinate = coordinate;
             }
-          };
-          visits.push(visitData);
-          if (!firstValidCoordinate) {
-            firstValidCoordinate = coordinate;
           }
         }
-      }
 
-      // Parse timeline path objects (for polylines)
-      if (item.timelinePath && Array.isArray(item.timelinePath)) {
-        const pathCoordinates = [];
-        
-        item.timelinePath.forEach((pathPoint) => {
-          if (pathPoint.point) {
-            const coordinate = parseGeoString(pathPoint.point);
-            if (coordinate) {
-              pathCoordinates.push(coordinate);
-              if (!firstValidCoordinate) {
-                firstValidCoordinate = coordinate;
+        // Parse timeline path objects (for polylines)
+        if (item.timelinePath && Array.isArray(item.timelinePath)) {
+          const pathCoordinates = [];
+          
+          item.timelinePath.forEach((pathPoint) => {
+            if (pathPoint.point) {
+              const coordinate = parseGeoString(pathPoint.point);
+              if (coordinate) {
+                pathCoordinates.push(coordinate);
+                if (!firstValidCoordinate) {
+                  firstValidCoordinate = coordinate;
+                }
               }
             }
-          }
-        });
+          });
 
-        // Only add paths with at least 2 points
-        if (pathCoordinates.length >= 2) {
-          const pathData = {
-            coordinates: pathCoordinates,
-            metadata: {
-              index,
-              startTime: item.startTime,
-              endTime: item.endTime,
-              distance: item.activity?.distanceMeters,
-              activityType: item.activity?.topCandidate?.type,
+          // Simplify and cap to reduce memory while keeping shape
+          if (pathCoordinates.length >= 2) {
+            const simplified = simplifyPath(pathCoordinates, 0.0002); // aggressive simplification for memory
+            const limited = simplified.slice(0, 300); // hard cap per path
+
+            if (limited.length >= 2) {
+              const pathData = {
+                coordinates: limited,
+                arrayIndex: paths.length,
+                metadata: {
+                  index,
+                  startTime: item.startTime,
+                  endTime: item.endTime,
+                  distance: item.activity?.distanceMeters,
+                  activityType: item.activity?.topCandidate?.type,
+                }
+              };
+              paths.push(pathData);
             }
-          };
-          paths.push(pathData);
+          }
         }
-      }
-    });
+      });
 
-    // Update state with parsed data
+      processedItems += chunk.length;
+      const progress = (processedItems / totalItems) * 100;
+      setParseProgress(progress);
+
+      // Update state incrementally for better UX
+      if (i % (CHUNK_SIZE * 5) === 0 || i + CHUNK_SIZE >= totalItems) {
+        setVisitPoints([...visits]);
+        setTimelinePaths([...paths]);
+      }
+
+      // Yield to UI thread every chunk
+      await new Promise(resolve => {
+        InteractionManager.runAfterInteractions(() => {
+          setTimeout(resolve, 0);
+        });
+      });
+    }
+
+    // Final update
     setVisitPoints(visits);
     setTimelinePaths(paths);
 
     // Center map on first valid coordinate
     if (firstValidCoordinate) {
-      setMapRegion({
+      const newRegion = {
         latitude: firstValidCoordinate.latitude,
         longitude: firstValidCoordinate.longitude,
         latitudeDelta: 0.5,
         longitudeDelta: 0.5,
-      });
+      };
+      setMapRegion(newRegion);
+      currentRegionRef.current = newRegion;
     }
 
     console.log(`Parsed ${visits.length} visit points and ${paths.length} timeline paths`);
-    
-    // Return counts for success message
-    return { visitCount: visits.length, pathCount: paths.length };
+    Alert.alert('Success', `Loaded ${visits.length} points and ${paths.length} paths`);
   };
 
   // Format date string for display
@@ -360,14 +575,138 @@ export default function App() {
     return `${hours}h ${mins}m`;
   };
 
-  // Get items to display (filtered if something is selected, respecting toggle states)
-  const displayedPoints = selectedPoint !== null 
-    ? [visitPoints[selectedPoint]]
-    : (selectedPath !== null ? [] : (showPoints ? visitPoints : []));
-  
-  const displayedPaths = selectedPath !== null
-    ? [timelinePaths[selectedPath]]
-    : (selectedPoint !== null ? [] : (showPolylines ? timelinePaths : []));
+  // Handle map region changes
+  const handleRegionChangeComplete = useCallback((region) => {
+    currentRegionRef.current = region;
+    setMapRegion(region);
+  }, []);
+
+  // Filter points based on viewport with clustering to keep everything visible without overload
+  const getVisiblePoints = useMemo(() => {
+    if (selectedPoint !== null) {
+      const selected = visitPoints[selectedPoint];
+      if (selected && selected.latitude != null && selected.longitude != null) {
+        return [selected];
+      }
+      return [];
+    }
+    
+    if (selectedPath !== null || !showPoints) {
+      return [];
+    }
+
+    let points = visitPoints;
+
+    // Apply viewport filtering if enabled
+    if (useViewportFiltering) {
+      points = visitPoints.filter(point => 
+        point && point.latitude != null && point.longitude != null &&
+        isCoordinateInViewport(point, currentRegionRef.current)
+      );
+    }
+
+    // Filter out invalid points
+    points = points.filter(point => point && point.latitude != null && point.longitude != null);
+
+    // Cluster if very dense to keep draw calls reasonable while keeping coverage.
+    // During loading, keep the target smaller to avoid overload.
+    const clusterTarget = isLoading ? 300 : Math.min(maxRenderItems, 600);
+    points = clusterPoints(points, mapRegion, clusterTarget);
+
+    return points;
+  }, [visitPoints, selectedPoint, selectedPath, showPoints, useViewportFiltering, maxRenderItems, mapRegion, isLoading]);
+
+  // Filter paths based on viewport with simplification to keep everything visible
+  const pathsCappedRef = useRef(false);
+
+  const getVisiblePaths = useMemo(() => {
+    pathsCappedRef.current = false;
+
+    // Skip rendering paths while loading to avoid heavy draw calls mid-parse
+    if (isLoading) {
+      return [];
+    }
+
+    if (selectedPath !== null) {
+      const selected = timelinePaths[selectedPath];
+      if (selected && Array.isArray(selected.coordinates) && selected.coordinates.length > 1) {
+        return [selected];
+      }
+      return [];
+    }
+    
+    if (selectedPoint !== null || !showPolylines) {
+      return [];
+    }
+
+    let paths = timelinePaths;
+
+    // Filter out invalid paths
+    paths = paths.filter(path => 
+      path && Array.isArray(path.coordinates) && path.coordinates.length > 1
+    );
+
+    // Apply viewport filtering if enabled
+    if (useViewportFiltering) {
+      paths = paths.filter(path => 
+        doesPathIntersectViewport(path.coordinates, currentRegionRef.current)
+      );
+    }
+
+    // Simplify routes based on zoom to reduce segment count without dropping routes
+    const wideView = mapRegion.latitudeDelta > 1.5 || mapRegion.longitudeDelta > 1.5;
+    const tolerance = wideView
+      ? Math.max(0.0007, mapRegion.latitudeDelta / 80)   // aggressive when zoomed out
+      : Math.max(0.00015, mapRegion.latitudeDelta / 250); // lighter when zoomed in
+
+    paths = paths.map(path => {
+      const coords = path.coordinates || [];
+      const simplified = simplifyPath(coords, tolerance);
+      const limited = simplified.slice(0, wideView ? 120 : 200); // cap segments per path
+      return {
+        ...path,
+        coordinates: limited,
+      };
+    });
+
+    // Hard cap number of visible paths to avoid overdraw/oom
+    const pathCap = 300;
+    if (paths.length > pathCap) {
+      console.warn('[DEBUG] capping visible paths to avoid overdraw:', paths.length, '->', pathCap);
+      paths = downsample(paths, pathCap);
+      pathsCappedRef.current = true;
+    }
+
+    return paths;
+  }, [timelinePaths, selectedPath, selectedPoint, showPolylines, useViewportFiltering, maxRenderItems, mapRegion]);
+
+  // Debug counts for visibility/render pressure
+  const visiblePointsCount = getVisiblePoints.length;
+  const visiblePathsCount = getVisiblePaths.length;
+  const visibleClusterCount = getVisiblePoints.filter(p => p?.metadata?.isCluster).length;
+  const showPointsLimitedNotice = !isLoading && visibleClusterCount > 0;
+  const showPathsLimitedNotice = !isLoading && selectedPath === null && (pathsCappedRef.current || visiblePathsCount >= 295);
+  // Clamp heatmap radius to safe bounds (react-native-maps expects a limited radius)
+  const heatmapRadius = useMemo(() => {
+    const base = 40;
+    const scale = Math.max(0.6, Math.min(2.5, 1 / Math.max(0.2, mapRegion.latitudeDelta)));
+    return Math.min(80, Math.max(20, Math.round(base * scale)));
+  }, [mapRegion]);
+
+  useEffect(() => {
+    // Avoid spam while loading; log when load completes or counts change meaningfully
+    const totalPoints = visitPoints.length;
+    const totalPaths = timelinePaths.length;
+    console.log(
+      `[DEBUG] render state | loading:${isLoading} | total points:${totalPoints} visible points:${visiblePointsCount} clusters:${visibleClusterCount} | total paths:${totalPaths} visible paths:${visiblePathsCount} | region dLat:${mapRegion.latitudeDelta?.toFixed?.(3)} dLon:${mapRegion.longitudeDelta?.toFixed?.(3)}`
+    );
+    if (visiblePointsCount > 1200) {
+      console.warn('[DEBUG] high visible point count, potential overdraw:', visiblePointsCount);
+    }
+    if (visiblePathsCount > 400) {
+      console.warn('[DEBUG] high visible path count, potential overdraw:', visiblePathsCount);
+    }
+  }, [visiblePointsCount, visiblePathsCount, visibleClusterCount, isLoading, mapRegion, visitPoints.length, timelinePaths.length]);
 
   // Hide loading animation when state changes
   useEffect(() => {
@@ -389,15 +728,17 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <SafeAreaView style={styles.container} edges={['left', 'right']}>
+      <SafeAreaView style={styles.container} edges={['left', 'right', 'bottom']}>
         {/* Map View */}
         <MapView
-        style={styles.map}
-        initialRegion={mapRegion}
-        region={visitPoints.length > 0 ? mapRegion : undefined}
-        customMapStyle={darkMapStyle}
-        provider={PROVIDER_GOOGLE}
-        onPress={(e) => {
+          ref={mapViewRef}
+          style={styles.map}
+          initialRegion={mapRegion}
+          region={visitPoints.length > 0 ? mapRegion : undefined}
+          customMapStyle={darkMapStyle}
+          provider={PROVIDER_GOOGLE}
+          onRegionChangeComplete={handleRegionChangeComplete}
+          onPress={(e) => {
           // Only deselect if we're clicking on the map itself, not markers/polylines
           if (markerTappedRef.current) {
             markerTappedRef.current = false;
@@ -415,17 +756,35 @@ export default function App() {
         }}
       >
         {/* Render Point Markers */}
-        {showPoints && displayedPoints.map((point, index) => {
-          const originalIndex = selectedPoint !== null ? selectedPoint : index;
+        {getVisiblePoints.map((point, index) => {
+          // Skip invalid points
+          if (!point || point.latitude == null || point.longitude == null) {
+            return null;
+          }
+
+          const isCluster = point.metadata?.isCluster;
+          // Use arrayIndex/metadata.index for real points; clusters just use loop index
+          const originalIndex = isCluster ? -1 : (point.arrayIndex ?? point.metadata?.index ?? index);
+          const markerKey = isCluster
+            ? `cluster-${index}-${point.latitude}-${point.longitude}`
+            : `marker-${originalIndex}`;
+
+          const coordinate = {
+            latitude: point.latitude,
+            longitude: point.longitude,
+          };
+
           return (
             <MemoizedMarker
-              key={`marker-${originalIndex}`}
-              coordinate={point}
-              isSelected={selectedPoint === originalIndex}
+              key={markerKey}
+              coordinate={coordinate}
+              isSelected={!isCluster && selectedPoint === originalIndex}
               onPress={() => {
+                if (isCluster) {
+                  return;
+                }
                 markerTappedRef.current = true;
                 showLoadingAnimation();
-                // Delay state update to ensure loading shows first
                 setTimeout(() => {
                   setSelectedPoint(originalIndex);
                   setSelectedPath(null);
@@ -436,15 +795,28 @@ export default function App() {
         })}
 
         {/* Render Polylines with tap targets */}
-        {showPolylines && displayedPaths.map((path, index) => {
-          const originalIndex = selectedPath !== null ? selectedPath : index;
+        {getVisiblePaths.map((path, index) => {
+          if (!path || !Array.isArray(path.coordinates) || path.coordinates.length < 2) {
+            return null;
+          }
+
+          // Use the path's array index if present, fallback to current loop index
+          const originalIndex = path.arrayIndex ?? index;
           const isSelected = selectedPath === originalIndex;
+
+          const validCoordinates = path.coordinates.filter(
+            coord => coord && coord.latitude != null && coord.longitude != null
+          );
+
+          if (validCoordinates.length < 2) {
+            return null;
+          }
           
           return [
             // Invisible wide polyline for tap detection
             <Polyline
               key={`polyline-tap-${originalIndex}`}
-              coordinates={path.coordinates}
+              coordinates={validCoordinates}
               strokeColor="rgba(0,0,0,0.01)"
               strokeWidth={1}
               lineCap="round"
@@ -463,7 +835,7 @@ export default function App() {
             // Visible polyline
             <Polyline
               key={`polyline-visible-${originalIndex}`}
-              coordinates={path.coordinates}
+              coordinates={validCoordinates}
               strokeColor={isSelected ? "#00FF00" : "#4A90E2"}
               strokeWidth={isSelected ? 6 : 4}
               lineCap="round"
@@ -476,7 +848,7 @@ export default function App() {
         {showHeatmap && visitPoints.length > 0 && !selectedPoint && !selectedPath && (
           <Heatmap
             points={visitPoints}
-            radius={150}
+            radius={heatmapRadius}
             opacity={0.8}
             gradient={{
               colors: ['#00FF00', '#FFFF00', '#FF0000'],
@@ -496,7 +868,14 @@ export default function App() {
           disabled={isLoading}
         >
           {isLoading ? (
-            <ActivityIndicator color="#FFFFFF" />
+            <View style={styles.loadingButtonContent}>
+              <ActivityIndicator color="#FFFFFF" size="small" />
+              {parseProgress > 0 && (
+                <Text style={styles.progressText}>
+                  {Math.round(parseProgress)}%
+                </Text>
+              )}
+            </View>
           ) : (
             <Text style={styles.buttonText}>📁 Load Data</Text>
           )}
@@ -508,6 +887,15 @@ export default function App() {
             <Text style={styles.infoText}>
               Points: {visitPoints.length} | Paths: {timelinePaths.length}
             </Text>
+            <Text style={styles.infoSubText}>
+              Rendering: {getVisiblePoints.length} points, {getVisiblePaths.length} paths
+            </Text>
+            {(showPointsLimitedNotice || showPathsLimitedNotice) && (
+              <Text style={styles.noticeText}>
+                {showPointsLimitedNotice ? 'Clustering dense points; zoom in for detail. ' : ''}
+                {showPathsLimitedNotice ? 'Routes limited for performance; zoom in for more.' : ''}
+              </Text>
+            )}
           </View>
         )}
 
@@ -599,110 +987,105 @@ export default function App() {
             </TouchableOpacity>
           </View>
           
-          <ScrollView style={styles.detailContent}>
-            {selectedPoint !== null && visitPoints[selectedPoint] && (
-              <>
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Type:</Text>
-                  <Text style={styles.detailValue}>
-                    {visitPoints[selectedPoint].metadata.semanticType || 'Unknown'}
-                  </Text>
-                </View>
-                
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Start:</Text>
-                  <Text style={styles.detailValue}>
-                    {formatDate(visitPoints[selectedPoint].metadata.startTime)}
-                  </Text>
-                </View>
-                
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>End:</Text>
-                  <Text style={styles.detailValue}>
-                    {formatDate(visitPoints[selectedPoint].metadata.endTime)}
-                  </Text>
-                </View>
-                
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Duration:</Text>
-                  <Text style={styles.detailValue}>
-                    {calculateDuration(
-                      visitPoints[selectedPoint].metadata.startTime,
-                      visitPoints[selectedPoint].metadata.endTime
-                    )}
-                  </Text>
-                </View>
-                
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Confidence:</Text>
-                  <Text style={styles.detailValue}>
-                    {visitPoints[selectedPoint].metadata.probability 
-                      ? `${(parseFloat(visitPoints[selectedPoint].metadata.probability) * 100).toFixed(1)}%`
-                      : 'N/A'}
-                  </Text>
-                </View>
-                
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Coordinates:</Text>
-                  <Text style={styles.detailValue}>
-                    {visitPoints[selectedPoint].latitude.toFixed(6)}, {visitPoints[selectedPoint].longitude.toFixed(6)}
-                  </Text>
-                </View>
-              </>
-            )}
-            
-            {selectedPath !== null && timelinePaths[selectedPath] && (
-              <>
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Activity:</Text>
-                  <Text style={styles.detailValue}>
-                    {timelinePaths[selectedPath].metadata.activityType || 'Unknown'}
-                  </Text>
-                </View>
-                
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Start:</Text>
-                  <Text style={styles.detailValue}>
-                    {formatDate(timelinePaths[selectedPath].metadata.startTime)}
-                  </Text>
-                </View>
-                
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>End:</Text>
-                  <Text style={styles.detailValue}>
-                    {formatDate(timelinePaths[selectedPath].metadata.endTime)}
-                  </Text>
-                </View>
-                
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Duration:</Text>
-                  <Text style={styles.detailValue}>
-                    {calculateDuration(
-                      timelinePaths[selectedPath].metadata.startTime,
-                      timelinePaths[selectedPath].metadata.endTime
-                    )}
-                  </Text>
-                </View>
-                
-                {timelinePaths[selectedPath].metadata.distance && (
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Distance:</Text>
+        <ScrollView style={styles.detailContent}>
+          {selectedPoint !== null && visitPoints[selectedPoint] && (
+            <View style={styles.detailGrid}>
+              <View style={styles.detailItemFull}>
+                <View style={styles.detailRowInline}>
+                  <View style={styles.detailCol}>
+                    <Text style={styles.detailLabel}>Coordinates</Text>
                     <Text style={styles.detailValue}>
-                      {(parseFloat(timelinePaths[selectedPath].metadata.distance) / 1000).toFixed(2)} km
-                      {' '}({(parseFloat(timelinePaths[selectedPath].metadata.distance) * 0.000621371).toFixed(2)} mi)
+                      {visitPoints[selectedPoint].latitude.toFixed(6)}, {visitPoints[selectedPoint].longitude.toFixed(6)}
                     </Text>
                   </View>
-                )}
-                
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Points:</Text>
-                  <Text style={styles.detailValue}>
-                    {timelinePaths[selectedPath].coordinates.length}
-                  </Text>
+                  <View style={styles.detailCol}>
+                    <Text style={styles.detailLabel}>Type</Text>
+                    <Text style={styles.detailValue}>
+                      {visitPoints[selectedPoint].metadata.semanticType || 'Unknown'}
+                    </Text>
+                  </View>
                 </View>
-              </>
-            )}
-          </ScrollView>
+                <Text style={styles.detailSubValue}>
+                  Confidence: {visitPoints[selectedPoint].metadata.probability 
+                    ? `${(parseFloat(visitPoints[selectedPoint].metadata.probability) * 100).toFixed(1)}%`
+                    : 'N/A'}
+                </Text>
+              </View>
+
+              <View style={styles.detailItemFull}>
+                <View style={styles.detailRowInline}>
+                  <View style={styles.detailCol}>
+                    <Text style={styles.detailSubLabel}>Start</Text>
+                    <Text style={styles.detailValue}>
+                      {formatDate(visitPoints[selectedPoint].metadata.startTime)}
+                    </Text>
+                  </View>
+                  <View style={styles.detailCol}>
+                    <Text style={styles.detailSubLabel}>End</Text>
+                    <Text style={styles.detailValue}>
+                      {formatDate(visitPoints[selectedPoint].metadata.endTime)}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.detailSubValue}>
+                  Duration: {calculateDuration(
+                    visitPoints[selectedPoint].metadata.startTime,
+                    visitPoints[selectedPoint].metadata.endTime
+                  )}
+                </Text>
+              </View>
+            </View>
+          )}
+          
+          {selectedPath !== null && timelinePaths[selectedPath] && (
+            <View style={styles.detailGrid}>
+              <View style={styles.detailItemFull}>
+                <View style={styles.detailRowInline}>
+                  <View style={styles.detailCol}>
+                    <Text style={styles.detailLabel}>Points</Text>
+                    <Text style={styles.detailValue}>
+                      {timelinePaths[selectedPath].coordinates.length}
+                    </Text>
+                  </View>
+                  <View style={styles.detailCol}>
+                    <Text style={styles.detailLabel}>Activity</Text>
+                    <Text style={styles.detailValue}>
+                      {timelinePaths[selectedPath].metadata.activityType || 'Unknown'}
+                    </Text>
+                  </View>
+                </View>
+                {timelinePaths[selectedPath].metadata.distance && (
+                  <Text style={styles.detailSubValue}>
+                    Distance: {(parseFloat(timelinePaths[selectedPath].metadata.distance) / 1000).toFixed(2)} km ({(parseFloat(timelinePaths[selectedPath].metadata.distance) * 0.000621371).toFixed(2)} mi)
+                  </Text>
+                )}
+              </View>
+
+              <View style={styles.detailItemFull}>
+                <View style={styles.detailRowInline}>
+                  <View style={styles.detailCol}>
+                    <Text style={styles.detailSubLabel}>Start</Text>
+                    <Text style={styles.detailValue}>
+                      {formatDate(timelinePaths[selectedPath].metadata.startTime)}
+                    </Text>
+                  </View>
+                  <View style={styles.detailCol}>
+                    <Text style={styles.detailSubLabel}>End</Text>
+                    <Text style={styles.detailValue}>
+                      {formatDate(timelinePaths[selectedPath].metadata.endTime)}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.detailSubValue}>
+                  Duration: {calculateDuration(
+                    timelinePaths[selectedPath].metadata.startTime,
+                    timelinePaths[selectedPath].metadata.endTime
+                  )}
+                </Text>
+              </View>
+            </View>
+          )}
+        </ScrollView>
         </View>
       )}
 
@@ -763,6 +1146,16 @@ const styles = StyleSheet.create({
   loadButton: {
     backgroundColor: '#4A90E2',
   },
+  loadingButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  progressText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
   buttonText: {
     color: '#FFFFFF',
     fontSize: 14,
@@ -779,6 +1172,18 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 11,
     fontWeight: '600',
+  },
+  infoSubText: {
+    color: '#9CA5B3',
+    fontSize: 9,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  noticeText: {
+    color: '#FFDD57',
+    fontSize: 10,
+    fontWeight: '700',
+    marginTop: 4,
   },
   toggleContainer: {
     flexDirection: 'row',
@@ -813,7 +1218,8 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(26, 26, 26, 0.97)',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: '45%',
+    maxHeight: '40%', // keep panel compact; content scrolls if needed
+    paddingBottom: 6,
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
@@ -858,21 +1264,74 @@ const styles = StyleSheet.create({
   detailContent: {
     padding: 12,
     paddingBottom: 16,
-    maxHeight: 300,
+    maxHeight: 280, // ensure panel doesn't overflow when content is short
   },
-  detailRow: {
-    marginBottom: 12,
+  detailGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  detailItem: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    width: '48%',
+  },
+  detailItemThird: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    width: '30%',
+  },
+  detailItemFull: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    width: '100%',
+  },
+  detailRowInline: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 8,
   },
   detailLabel: {
     color: '#9CA5B3',
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
     marginBottom: 4,
   },
   detailValue: {
     color: '#FFFFFF',
     fontSize: 14,
-    fontWeight: '500',
+    fontWeight: '600',
+  },
+  detailSubValue: {
+    color: '#C6D4E3',
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  detailCol: {
+    flex: 1,
+    minWidth: '45%',
+  },
+  detailSubLabel: {
+    color: '#9CA5B3',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    marginBottom: 2,
   },
   loadingOverlay: {
     position: 'absolute',
